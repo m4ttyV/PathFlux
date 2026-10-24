@@ -1,8 +1,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$EnginePath,
-    [Parameter(Mandatory = $true)][string]$EngineSha256,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$EngineSha256,
     [string]$Output,
-    [switch]$Run
+    [switch]$Run,
+    [switch]$Elevate,
+    [ValidateSet('Tcp', 'DockerTcp', 'ExperimentalUdp')][string]$Suite = 'Tcp'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -17,9 +19,12 @@ if (-not $lab) { throw 'Build Release or publish PathFlux before running this sc
 if (-not $Output) { $Output = Join-Path $projectRoot ('lab-results\' + [guid]::NewGuid().ToString('N')) }
 $reportDirectory = [IO.Path]::GetFullPath($Output)
 if ($Run) {
-    Write-Host 'Explicit TUN run: only 198.18.0.1/32. Administrator required. Wintun driver may be installed.'
-    & $lab run-isolated $engine $EngineSha256 $reportDirectory --allow-tun
+    $command = switch ($Suite) { 'DockerTcp' { 'docker-tcp' } 'ExperimentalUdp' { 'udp-tun' } default { 'run-isolated' } }
+    Write-Host 'Explicit TUN run: one target /32 plus the lab interface subnet. Administrator required. Wintun driver may be installed.'
+    if ($Elevate) { & $lab elevate $command $engine $EngineSha256 $reportDirectory --allow-tun }
+    else { & $lab $command $engine $EngineSha256 $reportDirectory --allow-tun }
 } else {
+    if ($Suite -ne 'Tcp' -or $Elevate) { throw 'Choose -Run explicitly for elevated/network suites.' }
     Write-Host 'Prepare only: no TUN, no route or DNS changes.'
     & $lab prepare $engine $EngineSha256 $reportDirectory
 }

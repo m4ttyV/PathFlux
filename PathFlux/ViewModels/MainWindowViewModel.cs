@@ -432,6 +432,12 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         _operationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
         try { await action(_lifetime.Token); }
         catch (EditorValidationException ex) { Notice = ex.Message; }
+        catch (EngineOperationException ex)
+        {
+            Notice = ex.Message;
+            AddLog(ex.Message);
+            try { await UpdateStatusAsync(_lifetime.Token); } catch { }
+        }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {

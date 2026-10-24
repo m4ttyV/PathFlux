@@ -93,6 +93,12 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
+      "pathflux.agent": {
+        "type": "Project",
+        "dependencies": {
+          "PathFlux.Engine": "[1.0.0, )"
+        }
+      },
       "pathflux.application": {
         "type": "Project",
         "dependencies": {

@@ -32,7 +32,7 @@ public class NetworkLabTests
     [InlineData("198.18.0.1/32")]
     [InlineData("198.18.0.0/15")]
     [InlineData("172.30.0.0/16")]
-    [InlineData("128.0.0.0/1")]
+    [InlineData("172.30.254.2/32")]
     public void ExistingOverlappingLabOrVpnRoutesRefuseStart(string prefix)
     {
         var snapshot = new NetworkSnapshot([new(prefix, "0.0.0.0", 1, 0)], []);

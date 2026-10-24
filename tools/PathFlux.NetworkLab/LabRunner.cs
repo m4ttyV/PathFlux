@@ -9,7 +9,7 @@ using PathFlux.Engine;
 namespace PathFlux.NetworkLab;
 
 public sealed record ProbeResult(bool Success, string Code);
-public sealed record LabCaseResult(string Name, bool Passed, bool SelectedReachedExpectedGateway, bool ControlMatchedExpectation, bool RecoveryConfirmed);
+public sealed record LabCaseResult(string Name, bool Passed, bool SelectedReachedExpectedGateway, bool ControlMatchedExpectation, bool RecoveryConfirmed, Dictionary<string, int>? Counters = null);
 public sealed class LabReport
 {
     public string Scope { get; init; } = "Isolated IPv4 TCP TUN, single synthetic destination; no default route or application UDP support claim";
@@ -24,9 +24,17 @@ public sealed class LabReport
     public bool TunStartAttempted { get; set; }
     public string Status { get; set; } = "Preparing";
     public string? ErrorCode { get; set; }
+    public string? LaboratoryDiagnostic { get; set; }
     public NetworkSnapshot? Before { get; set; }
     public NetworkSnapshot? After { get; set; }
+    public NetworkSnapshot? During { get; set; }
     public List<LabCaseResult> Cases { get; } = [];
+    public async Task SaveAsync(string directory)
+    {
+        var path = Path.Combine(directory, "report.json");
+        await File.WriteAllTextAsync(path + ".tmp", JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(path + ".tmp", path, true);
+    }
 }
 
 public static class LabRunner
@@ -64,12 +72,13 @@ public static class LabRunner
             await using var echo = new LabEchoServer();
             await using var first = new LabSocksGateway("Lab gateway one", echo);
             await using var second = new LabSocksGateway("Lab gateway two", echo);
+            await using var refused = new LabSocksGateway("Lab refusal", echo, 5);
             var self = await RunProbeAsync(selected, echo.Endpoint.Address.ToString(), echo.Endpoint.Port, RandomNumberGenerator.GetBytes(64), ct);
             if (!self.Success) throw new InvalidOperationException("ClonedProbeSelfTestFailed");
             report.ClonedProbeSelfTestPassed = true;
             foreach (var scenario in Enum.GetValues<LabScenario>())
             {
-                var config = LabPolicy.Create(scenario, selected, first.Profile, second.Profile);
+                var config = LabPolicy.Create(scenario, selected, first.Profile, scenario == LabScenario.UpstreamRefused ? refused.Profile : second.Profile);
                 config = config with { Settings = config.Settings with { EnginePath = enginePath } };
                 string json = await LabPolicy.GenerateAsync(config, ct, version);
                 if (!await EngineBinary.CheckAsync(enginePath, json, ct)) throw new InvalidOperationException("EngineCheckFailed");
@@ -84,7 +93,10 @@ public static class LabRunner
                     await SaveAsync();
                     // Confirm narrow scope before emitting any traffic from a probe.
                     var during = await NetworkSnapshot.CaptureAsync(ct);
-                    if (!report.Before.Defaults.SequenceEqual(during.Defaults)) throw new InvalidOperationException("DefaultRoutesChangedDuringLab");
+                    if (report.Before.CompareDuring(during, LabPolicy.TargetAddress).Length != 0) throw new InvalidOperationException("UnsafeRouteOrAdapterStateDuringLab");
+                    if (!report.Before.Routes.Where(r => NetworkSnapshot.IsDefaultLike(r.DestinationPrefix)).OrderBy(r => r.ToString())
+                        .SequenceEqual(during.Routes.Where(r => NetworkSnapshot.IsDefaultLike(r.DestinationPrefix)).OrderBy(r => r.ToString())))
+                        throw new InvalidOperationException("DefaultRoutesChangedDuringLab");
                     if (!during.Routes.Any(r => r.DestinationPrefix == LabPolicy.TargetAddress + "/32")) throw new InvalidOperationException("LabRouteNotInstalled");
                     var selectedNonce = RandomNumberGenerator.GetBytes(64);
                     var controlNonce = RandomNumberGenerator.GetBytes(64);
@@ -92,7 +104,7 @@ public static class LabRunner
                     var b = await RunProbeAsync(control, LabPolicy.TargetAddress, LabPolicy.TargetPort, controlNonce, ct);
                     string ah = Convert.ToHexString(SHA256.HashData(selectedNonce));
                     string bh = Convert.ToHexString(SHA256.HashData(controlNonce));
-                    bool expectedSelected = scenario is LabScenario.Path or LabScenario.Name or LabScenario.ProfileTwo;
+                    bool expectedSelected = scenario is LabScenario.Path or LabScenario.Name or LabScenario.ProfileTwo or LabScenario.EngineCrash or LabScenario.JobClose;
                     bool expectedControl = scenario == LabScenario.Name;
                     var expected = scenario == LabScenario.ProfileTwo ? second : first;
                     var other = scenario == LabScenario.ProfileTwo ? first : second;
@@ -102,6 +114,9 @@ public static class LabRunner
                     bool controlGood = b.Success == expectedControl
                         && first.ConfirmedPayloadHashes.Contains(bh) == expectedControl
                         && !second.ConfirmedPayloadHashes.Contains(bh);
+                    if (scenario == LabScenario.UpstreamRefused) selectedGood &= refused.Requests > 0;
+                    if (scenario == LabScenario.EngineCrash) engine.AbortProcess();
+                    if (scenario == LabScenario.JobClose) engine.CloseOwnerJob();
                     report.Cases.Add(new(scenario.ToString(), false, selectedGood, controlGood, false));
                 }
                 bool recovered = await WaitForRecoveryAsync(report.Before, ct);
@@ -173,17 +188,17 @@ public static class LabRunner
         }
         finally { if (!child.HasExited) { child.Kill(true); await child.WaitForExitAsync(CancellationToken.None); } }
     }
-    private static async Task WaitForInterfaceAsync(LabEngine engine, CancellationToken ct)
+    internal static async Task WaitForInterfaceAsync(LabEngine engine, CancellationToken ct)
     {
         for (int i = 0; i < 50; i++)
         {
-            if (engine.HasExited) throw new InvalidOperationException("EngineExitedBeforeTunReady");
-            if (NetworkInterface.GetAllNetworkInterfaces().Any(a => a.Name == LabPolicy.InterfaceName)) { await Task.Delay(250, ct); return; }
+            if (engine.HasExited) throw new InvalidOperationException("EngineExitedBeforeTunReady: " + engine.Diagnostic);
+            if (TunInterfaceProbe.IsReady(LabPolicy.InterfaceName)) { await Task.Delay(250, ct); return; }
             await Task.Delay(100, ct);
         }
         throw new InvalidOperationException("TunNotReady");
     }
-    private static async Task<bool> WaitForRecoveryAsync(NetworkSnapshot before, CancellationToken ct)
+    internal static async Task<bool> WaitForRecoveryAsync(NetworkSnapshot before, CancellationToken ct)
     {
         for (int i = 0; i < 5; i++)
         { if (before.CompareRecovery(await NetworkSnapshot.CaptureAsync(ct)).Length == 0) return true; await Task.Delay(300, ct); }

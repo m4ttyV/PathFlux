@@ -8,6 +8,26 @@ namespace PathFlux.App.Tests;
 public sealed partial class WorkflowTests
 {
     [Fact]
+    public async Task SafeEngineFailureIsVisibleInsteadOfOnlyExceptionType()
+    {
+        const string message = "Windows запретила доступ к каналу UI–агент.";
+        var engine = new FakeEngine { StartFailure = new EngineOperationException(message) };
+        await using var vm = Create(new MemoryStore(new()), new(), engine);
+        await vm.InitializeAsync(); await vm.StartCommand.ExecuteAsync(null);
+        Assert.Equal(message, vm.Notice);
+        Assert.Contains(vm.LogEntries, line => line.Contains(message));
+    }
+
+    [Fact]
+    public async Task UnexpectedEngineExceptionStillHidesRawSecrets()
+    {
+        var engine = new FakeEngine { StartFailure = new InvalidOperationException("raw-private-password") };
+        await using var vm = Create(new MemoryStore(new()), new(), engine);
+        await vm.InitializeAsync(); await vm.StartCommand.ExecuteAsync(null);
+        Assert.DoesNotContain("raw-private-password", vm.Notice);
+        Assert.DoesNotContain(vm.LogEntries, line => line.Contains("raw-private-password"));
+    }
+    [Fact]
     public async Task InvalidProfileIsRejectedWithoutPersistenceOrSecretLeak()
     {
         var store = new MemoryStore(new()); var secrets = new MemorySecrets();
@@ -158,12 +178,13 @@ public sealed partial class WorkflowTests
     }
     private sealed class FakeEngine : IProxyEngineAdapter
     {
+        public Exception? StartFailure { get; init; }
         public EngineState State { get; set; } = EngineState.Stopped;
         public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => Task.FromResult(new EngineCapabilities(
             SupportStatus.NotVerified, SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported,
             SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported));
         public Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct) => Task.FromResult(ConfigurationValidator.Validate(config));
-        public Task StartAsync(ProxyConfiguration config, CancellationToken ct) { State = EngineState.Running; return Task.CompletedTask; }
+        public Task StartAsync(ProxyConfiguration config, CancellationToken ct) { if (StartFailure is not null) throw StartFailure; State = EngineState.Running; return Task.CompletedTask; }
         public Task StopAsync(CancellationToken ct) { State = EngineState.Stopped; return Task.CompletedTask; }
         public Task<EngineStatus> GetStatusAsync(CancellationToken ct) => Task.FromResult(new EngineStatus(State, "Test engine; no network changes."));
     }

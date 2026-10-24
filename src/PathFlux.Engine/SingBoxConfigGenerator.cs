@@ -7,7 +7,12 @@ namespace PathFlux.Engine;
 public sealed class SingBoxConfigGenerator(ISecretStore secrets)
 {
     public const string InterfaceName = "PathFlux-TUN";
-    public async Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false, Version? engineVersion = null)
+    public Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false, Version? engineVersion = null)
+        => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, laboratoryUdp: false);
+    // No persisted setting or agent IPC field can select this path. NetworkLab only.
+    internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null)
+        => GenerateCoreAsync(configuration, ct, false, engineVersion, laboratoryUdp: true);
+    private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion, bool laboratoryUdp)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
@@ -19,10 +24,12 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             var outbound = new JsonObject
             {
                 ["type"] = p.Protocol == ProxyProtocol.Socks5 ? "socks" : "http",
-                ["tag"] = Tag(p.Id), ["server"] = p.Host, ["server_port"] = p.Port,
+                // Resolve the conventional local Docker endpoint without consulting TUN DNS or choosing ::1.
+                // IPv6-only local proxies remain available through an explicit ::1 address.
+                ["tag"] = Tag(p.Id), ["server"] = p.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || p.Host.Equals("localhost.", StringComparison.OrdinalIgnoreCase) ? "127.0.0.1" : p.Host, ["server_port"] = p.Port,
                 ["connect_timeout"] = "10s"
             };
-            if (p.Protocol == ProxyProtocol.Socks5) { outbound["version"] = "5"; outbound["network"] = "tcp"; }
+            if (p.Protocol == ProxyProtocol.Socks5) { outbound["version"] = "5"; if (!laboratoryUdp) outbound["network"] = "tcp"; }
             if (p.Protocol == ProxyProtocol.HttpsConnect)
                 outbound["tls"] = new JsonObject { ["enabled"] = true, ["server_name"] = string.IsNullOrWhiteSpace(p.TlsServerName) ? p.Host : p.TlsServerName, ["insecure"] = false };
             if (p.CredentialsRef is not null)
@@ -57,7 +64,8 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             {
                 var rule = new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value), ["network"] = network };
                 // A verified relay probe does not prove transparent TUN routing. Proxy UDP remains blocked.
-                if (r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp"))
+                bool labSocksUdp = laboratoryUdp && r.ProfileId is { } profileId && policy.Profiles.Any(p => p.Id == profileId && p.Protocol == ProxyProtocol.Socks5);
+                if (r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp" && !labSocksUdp))
                     rule["action"] = "reject";
                 else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : Tag(r.ProfileId!.Value); }
                 rules.Add(rule);
@@ -71,6 +79,9 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             {
                 ["type"] = "tun", ["tag"] = "tun-in", ["interface_name"] = InterfaceName,
                 ["address"] = new JsonArray("172.30.254.1/30", "fdfe:7061:7468::1/126"),
+                // Windows auto_route defaults to /0, which loses to OpenVPN's two /1 routes.
+                // Keep the existing VPN routes; TUN's lower-metric /1 routes capture application traffic.
+                ["route_address"] = new JsonArray("0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"),
                 ["mtu"] = 1500, ["auto_route"] = true, ["strict_route"] = false, ["stack"] = "mixed"
             }),
             ["outbounds"] = outbounds,

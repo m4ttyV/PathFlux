@@ -51,6 +51,7 @@ public enum UdpRelayFault
 }
 public sealed record Socks5UdpRelayOptions
 {
+    public IPEndPoint? TargetOverride { get; init; }
     public ProxyCredentials? Credentials { get; init; }
     public byte ReplyCode { get; init; }
     public bool ZeroRelayPort { get; init; }
@@ -173,14 +174,15 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                     var tcpRemote = (IPEndPoint)client.Client.RemoteEndPoint!;
                     if (!packet.RemoteEndPoint.Address.Equals(tcpRemote.Address) ||
                         (associatedClient.Port != 0 && associatedClient.Port != packet.RemoteEndPoint.Port)) continue;
-                    if (!TryDecode(packet.Buffer, out var target, out var payload) || !target.Equals(_echo.EndPoint)) continue;
+                    var expectedTarget = _options.TargetOverride ?? _echo.EndPoint;
+                    if (!TryDecode(packet.Buffer, out var target, out var payload) || !target.Equals(expectedTarget)) continue;
                     await upstream.SendAsync(payload, ct);
                     var echoed = await upstream.ReceiveAsync(ct);
                     Interlocked.Increment(ref _forwarded);
                     relayed++;
                     if (!echoed.RemoteEndPoint.Equals(_echo.EndPoint)) continue;
                     // Construct from the independently received echo address/payload; never replay request headers.
-                    var response = EncodeEndpoint(echoed.RemoteEndPoint.Address, echoed.RemoteEndPoint.Port, echoed.Buffer);
+                    var response = EncodeEndpoint(expectedTarget.Address, expectedTarget.Port, echoed.Buffer);
                     if (_options.Fault == UdpRelayFault.CloseControlBeforeLastReply && relayed >= _options.CloseAfterPackets)
                     { client.Close(); await Task.Delay(30, ct); }
                     switch (_options.Fault)
@@ -196,7 +198,7 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                         case UdpRelayFault.WrongAddressType: response[3] = 9; break;
                         case UdpRelayFault.WrongPayloadLength: response = [.. response, 0]; break;
                         case UdpRelayFault.StaleThenValid:
-                            var stale = EncodeEndpoint(echoed.RemoteEndPoint.Address, echoed.RemoteEndPoint.Port, previousPayload ?? new byte[64]);
+                            var stale = EncodeEndpoint(expectedTarget.Address, expectedTarget.Port, previousPayload ?? new byte[64]);
                             await relay.SendAsync(stale, packet.RemoteEndPoint, ct);
                             await relay.SendAsync(new byte[] { 0, 0, 1, 1 }, packet.RemoteEndPoint, ct);
                             break;

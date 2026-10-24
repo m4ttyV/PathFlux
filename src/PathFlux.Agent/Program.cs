@@ -1,7 +1,4 @@
 using System.Diagnostics;
-using System.IO.Pipes;
-using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Security.Principal;
 using PathFlux.Agent;
 using PathFlux.Application;
@@ -21,9 +18,9 @@ try
 {
     using var parent = Process.GetProcessById(parentPid);
     if (parent.StartTime.ToUniversalTime().Ticks != started) return 5;
-    using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+    using var pipe = WindowsAgentChannel.CreateClient(args[1]);
     using (var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(45))) await pipe.ConnectAsync(connectTimeout.Token);
-    if (!Native.GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out uint serverPid) || serverPid != parentPid) return 5;
+    WindowsAgentChannel.VerifyServer(pipe, parentPid);
     bool startedOnce = false;
     while (!parent.HasExited && pipe.IsConnected)
     {
@@ -34,23 +31,22 @@ try
         {
             case "start" when !startedOnce && request.Configuration is not null:
                 startedOnce = true;
-                reply = await session.StartAsync(request.Configuration, request.Credentials ?? [], idle.Token);
+                using (var startup = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+                    reply = await session.StartAsync(request.Configuration, request.Credentials ?? [], startup.Token);
                 break;
             case "status": reply = new(true, session.Status); break;
             case "stop":
-                session.Stop();
+                await session.StopAsync(idle.Token);
                 await AgentProtocol.WriteAsync(pipe, new AgentReply(session.Status.State == EngineState.Stopped, session.Status), idle.Token);
                 return 0;
             default: reply = new(false, new(EngineState.Failed, "Операция агента отклонена.")); break;
         }
-        await AgentProtocol.WriteAsync(pipe, reply, idle.Token);
+        using var replyTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await AgentProtocol.WriteAsync(pipe, reply, replyTimeout.Token);
     }
 }
+catch (UnauthorizedAccessException) { return 6; }
+catch (IOException) { return 7; }
+catch (OperationCanceledException) { return 8; }
 catch { return 1; } // Never persist raw exception messages or IPC payloads.
 return 0;
-
-internal static class Native
-{
-    [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint serverProcessId);
-}

@@ -1,20 +1,24 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using PathFlux.Application;
 using PathFlux.Domain;
 namespace PathFlux.Engine;
 
 public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAdapter, IAsyncDisposable
 {
+    private readonly string agentExecutablePath = Path.Combine(AppContext.BaseDirectory, "agent", "PathFlux.Agent.exe");
+    internal SingBoxEngineAdapter(ISecretStore secrets, string agentPath) : this(secrets)
+        => agentExecutablePath = Path.GetFullPath(agentPath);
     private readonly SemaphoreSlim gate = new(1, 1);
     private NamedPipeServerStream? pipe;
     private Process? agent;
+    private string? lastStartFailure;
     private EngineStatus status = new(EngineState.Stopped, "Движок остановлен.");
     public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => Task.FromResult(new EngineCapabilities(
-        SupportStatus.NotVerified, SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported,
-        SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported));
+        SupportStatus.Partial, SupportStatus.Partial, SupportStatus.Unsupported, SupportStatus.Unsupported,
+        SupportStatus.Partial, SupportStatus.Unsupported, SupportStatus.Unsupported));
 
     public async Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct)
     {
@@ -46,26 +50,24 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
                 return;
             }
             status = new(EngineState.Starting, "Проверка конфигурации…");
+            lastStartFailure = null;
+            if (RecoveryJournal.HasPendingBaseline(RecoveryJournal.DefaultPath))
+                throw new InvalidOperationException("Остался неподтверждённый снимок сети. Проверьте network-recovery.json командой recover-journal из NetworkLab перед новым запуском.");
             var validation = await ValidateAsync(config, ct);
             if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
-            string agentPath = Path.Combine(AppContext.BaseDirectory, "agent", "PathFlux.Agent.exe");
+            string agentPath = agentExecutablePath;
             if (!File.Exists(agentPath)) throw new InvalidOperationException("Не найден сетевой агент. Выполните сборку всего решения.");
             string pipeName = "PathFlux-" + Guid.NewGuid().ToString("N");
-            pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            var startInfo = new ProcessStartInfo(agentPath) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = Path.GetDirectoryName(agentPath)! };
-            startInfo.ArgumentList.Add("--pipe"); startInfo.ArgumentList.Add(pipeName);
-            startInfo.ArgumentList.Add("--parent"); startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
-            using var current = Process.GetCurrentProcess();
-            startInfo.ArgumentList.Add("--started"); startInfo.ArgumentList.Add(current.StartTime.ToUniversalTime().Ticks.ToString());
+            pipe = WindowsAgentChannel.CreateServer(pipeName);
+            var startInfo = WindowsAgentChannel.CreateStartInfo(agentPath, pipeName);
             agent = await Task.Run(() => Process.Start(startInfo), ct) ?? throw new InvalidOperationException("Не удалось запустить сетевой агент.");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(90));
             var connected = pipe.WaitForConnectionAsync(timeout.Token);
             var exited = agent.WaitForExitAsync(timeout.Token);
             if (await Task.WhenAny(connected, exited) == exited)
-                throw new InvalidOperationException("Сетевой агент завершился до подключения. Возможна другая активная сессия или недостаточные права.");
+                throw new InvalidOperationException(WindowsAgentChannel.DescribeExit(agent.ExitCode));
             await connected;
-            if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out uint clientPid) || clientPid != agent.Id)
-                throw new InvalidOperationException("Не удалось подтвердить процесс сетевого агента.");
+            WindowsAgentChannel.VerifyClient(pipe, agent.Id);
             var credentials = new Dictionary<string, ProxyCredentials>();
             foreach (var profile in config.Profiles.Where(p => p.Enabled && p.CredentialsRef is not null))
                 credentials[profile.CredentialsRef!] = await secrets.GetAsync(profile.CredentialsRef!, ct) ?? throw new InvalidOperationException("Не найдены учётные данные прокси.");
@@ -75,8 +77,9 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
         }
         catch (Exception ex)
         {
-            Cleanup(); status = new(EngineState.Failed, SafeMessage(ex));
-            throw new InvalidOperationException(status.Message);
+            lastStartFailure = SafeMessage(ex);
+            Cleanup(); status = new(EngineState.Failed, lastStartFailure);
+            throw new EngineOperationException(status.Message);
         }
         finally { gate.Release(); }
     }
@@ -88,7 +91,7 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             if (pipe?.IsConnected == true)
             {
                 status = new(EngineState.Stopping, "Остановка движка…");
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(12));
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(30));
                 await AgentProtocol.WriteAsync(pipe, new AgentRequest("stop"), timeout.Token);
                 var reply = await AgentProtocol.ReadAsync<AgentReply>(pipe, timeout.Token); status = reply.Status;
                 if (!reply.Success) throw new InvalidOperationException("Агент сообщил об ошибке остановки. Проверьте восстановление сети.");
@@ -96,15 +99,24 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             }
             else
             {
-                if (status.State == EngineState.Failed && !CanConfirmStopped())
+                if (status.State == EngineState.Failed && !await WaitForStoppedAsync(ct))
                     throw new InvalidOperationException("Остановка агента или очистка TUN не подтверждена. Выполните recovery-проверку сети.");
                 status = new(EngineState.Stopped, "Движок остановлен. При сбое проверьте состояние сети по recovery-инструкции.");
             }
         }
-        catch
+        catch (Exception ex)
         {
-            status = new(EngineState.Failed, "Остановка не подтверждена. Агент завершает движок; проверьте восстановление сети.");
-            throw new InvalidOperationException(status.Message);
+            // Closing IPC tells our agent to stop. Give the process and transient IP interface time to disappear.
+            pipe?.Dispose(); pipe = null;
+            if (await WaitForStoppedAsync(CancellationToken.None))
+            {
+                status = new(EngineState.Stopped, "Движок остановлен. Завершение агента и очистка IP-интерфейса подтверждены.");
+                return;
+            }
+            string reason = ex is OperationCanceledException ? "Истекло время ожидания." : SafeMessage(ex);
+            string initial = lastStartFailure is null ? "" : $" Ошибка запуска: {lastStartFailure}";
+            status = new(EngineState.Failed, $"Остановка не подтверждена. {reason}{initial} Проверьте восстановление сети.");
+            throw new EngineOperationException(status.Message);
         }
         finally { Cleanup(); gate.Release(); }
     }
@@ -129,11 +141,23 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
         if (!OperatingSystem.IsWindows()) return false;
         try
         {
-            if (NetworkInterface.GetAllNetworkInterfaces().Any(i => i.Name == SingBoxConfigGenerator.InterfaceName)) return false;
-            try { using var runningAgent = EventWaitHandle.OpenExisting(@"Global\PathFlux.NetworkAgent.Lifetime.v1"); return false; }
+            if (TunInterfaceProbe.RequiresCleanup(SingBoxConfigGenerator.InterfaceName)) return false;
+            if (RecoveryJournal.HasPendingBaseline(RecoveryJournal.DefaultPath)) return false;
+            // Query existence without requesting write access across the integrity-level boundary.
+            try { using var runningAgent = EventWaitHandleAcl.OpenExisting(@"Global\PathFlux.NetworkAgent.Lifetime.v1", EventWaitHandleRights.Synchronize); return false; }
             catch (WaitHandleCannotBeOpenedException) { return true; }
         }
         catch { return false; }
+    }
+    private static async Task<bool> WaitForStoppedAsync(CancellationToken ct)
+    {
+        var timer = Stopwatch.StartNew();
+        while (true)
+        {
+            if (CanConfirmStopped()) return true;
+            if (timer.Elapsed >= TimeSpan.FromSeconds(5)) return false;
+            await Task.Delay(200, ct);
+        }
     }
     public async ValueTask DisposeAsync() { try { await StopAsync(CancellationToken.None); } finally { gate.Dispose(); } }
     private static string SafeMessage(Exception ex) => ex switch
@@ -145,6 +169,4 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
         UnauthorizedAccessException => "Нет доступа к движку или локальному каналу агента.",
         _ => $"Ошибка сетевого компонента ({ex.GetType().Name})."
     };
-    [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
 }

@@ -51,12 +51,15 @@ public sealed class LabSocksGateway : IAsyncDisposable
     private readonly CancellationTokenSource stop = new();
     private readonly ConcurrentBag<Task> clients = [];
     private readonly LabEchoServer echo;
+    private readonly byte replyCode;
+    private int requests;
+    public int Requests => Volatile.Read(ref requests);
     private readonly Task loop;
     public ConcurrentQueue<string> ConfirmedPayloadHashes { get; } = new();
     public ProxyProfile Profile { get; }
-    public LabSocksGateway(string name, LabEchoServer echo)
+    public LabSocksGateway(string name, LabEchoServer echo, byte replyCode = 0)
     {
-        this.echo = echo; listener.Start();
+        this.echo = echo; this.replyCode = replyCode; listener.Start();
         Profile = new() { Name = name, Host = "127.0.0.1", Port = ((IPEndPoint)listener.LocalEndpoint).Port };
         loop = AcceptAsync();
     }
@@ -86,6 +89,8 @@ public sealed class LabSocksGateway : IAsyncDisposable
                 var target = new IPAddress(request.AsSpan(4, 4)); var port = (request[8] << 8) | request[9];
                 if (target.ToString() != LabPolicy.TargetAddress || port != LabPolicy.TargetPort)
                 { await stream.WriteAsync(new byte[] { 5, 2, 0, 1, 0, 0, 0, 0, 0, 0 }, ct); return; }
+                Interlocked.Increment(ref requests);
+                if (replyCode != 0) { await stream.WriteAsync(new byte[] { 5, replyCode, 0, 1, 0, 0, 0, 0, 0, 0 }, ct); return; }
                 using var upstream = new TcpClient(); await upstream.ConnectAsync(echo.Endpoint, ct);
                 await stream.WriteAsync(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 0 }, ct);
                 var payload = new byte[64]; await stream.ReadExactlyAsync(payload, ct);

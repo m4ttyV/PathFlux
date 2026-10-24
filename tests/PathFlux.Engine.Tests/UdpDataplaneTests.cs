@@ -14,6 +14,17 @@ namespace PathFlux.Engine.Tests;
 public sealed class UdpDataplaneTests
 {
     [EngineFact]
+    public async Task ProductionSocksOutboundStillRefusesUdpWithDirectlyReachableEcho()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var echo = new UdpEchoServer();
+        await using var relay = new Socks5UdpRelay(echo, new() { Fault = UdpRelayFault.Fragmented });
+        await using var engine = await StartLabEngineAsync(relay.Profile, new Secrets(null), deadline.Token, experimental: false);
+        var result = await new ProxyDiagnostics(new Secrets(null), TimeSpan.FromSeconds(2)).TestUdpRelayAsync(engine.Profile,
+            new(echo.EndPoint.Address.ToString(), echo.EndPoint.Port), deadline.Token);
+        Assert.False(result.Success); Assert.Equal(0, echo.ReceivedPackets); Assert.Equal(0, relay.ForwardedPackets);
+    }
+    [EngineFact]
     public async Task OfficialEngineForwardsUdpThroughAuthenticatedSocksUpstreamToIndependentEcho()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -55,7 +66,7 @@ public sealed class UdpDataplaneTests
         Assert.Empty(relay.UnexpectedErrors);
     }
 
-    private static async Task<LabEngine> StartLabEngineAsync(ProxyProfile upstream, ISecretStore secrets, CancellationToken ct)
+    private static async Task<LabEngine> StartLabEngineAsync(ProxyProfile upstream, ISecretStore secrets, CancellationToken ct, bool experimental = true)
     {
         var path = Environment.GetEnvironmentVariable("PATHFLUX_TEST_ENGINE")!;
         var binaryLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -63,22 +74,21 @@ public sealed class UdpDataplaneTests
         try
         {
             var version = await EngineBinary.VerifyAsync(path, EngineTestBinary.ExpectedHash, ct);
-            using var reservation = new TcpListener(IPAddress.Loopback, 0);
-            reservation.Start();
-            int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
-            using var udpReservation = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+            using var reservation = new DualPortReservation();
+            int port = reservation.Port;
             var config = new ProxyConfiguration { Profiles = [upstream] };
-            var json = JsonNode.Parse(await new SingBoxConfigGenerator(secrets).GenerateAsync(config, ct, engineVersion: version))!;
-            Assert.Equal("tcp", (string?)json["outbounds"]![1]!["network"]);
+            var generator = new SingBoxConfigGenerator(secrets);
+            var production = JsonNode.Parse(await generator.GenerateAsync(config, ct, engineVersion: version))!;
+            Assert.Equal("tcp", (string?)production["outbounds"]![1]!["network"]);
+            var json = experimental ? JsonNode.Parse(await generator.GenerateExperimentalUdpAsync(config, ct, version))! : production;
             // TEST-ONLY configuration: replace TUN and process rules with a local SOCKS inlet.
             // Let the engine exercise its UDP outbound; production still rejects Proxy UDP.
-            json["outbounds"]![1]!.AsObject().Remove("network");
             json["inbounds"] = new JsonArray(new JsonObject
             { ["type"] = "socks", ["tag"] = "lab-in", ["listen"] = "127.0.0.1", ["listen_port"] = port });
             json["route"] = new JsonObject { ["final"] = SingBoxConfigGenerator.Tag(upstream.Id) };
             string text = json.ToJsonString();
             Assert.True(await EngineBinary.CheckAsync(path, text, ct));
-            reservation.Stop(); udpReservation.Dispose();
+            reservation.Dispose();
             process = new Process { StartInfo = EngineBinary.CreateStartInfo(path, "run") };
             process.Start();
             var output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
@@ -109,6 +119,32 @@ public sealed class UdpDataplaneTests
             binaryLock.Dispose();
             throw;
         }
+    }
+    private sealed class DualPortReservation : IDisposable
+    {
+        private TcpListener? tcp;
+        private UdpClient? udp;
+        public int Port { get; private set; }
+        public DualPortReservation()
+        {
+            for (int attempt = 0; attempt < 32; attempt++)
+            {
+                // TCP's sequential ephemeral allocator can stay inside a UDP-excluded Hyper-V range.
+                // Sample independently and reserve the SAME concrete port in both protocol tables.
+                Port = System.Security.Cryptography.RandomNumberGenerator.GetInt32(16384, 49152);
+                tcp = new TcpListener(IPAddress.Loopback, Port);
+                try
+                {
+                    tcp.Start(); udp = new UdpClient(AddressFamily.InterNetwork);
+                    udp.Client.Bind(new IPEndPoint(IPAddress.Loopback, Port)); return;
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AccessDenied or SocketError.AddressAlreadyInUse)
+                { Dispose(); } // Hyper-V/Docker can reserve a UDP range separately from TCP.
+                catch { Dispose(); throw; }
+            }
+            throw new InvalidOperationException("NoSharedLoopbackTcpUdpPortAvailable");
+        }
+        public void Dispose() { tcp?.Stop(); tcp = null; udp?.Dispose(); udp = null; }
     }
     private sealed class LabEngine(Process process, FileStream binaryLock, Task output, Task error, ProxyProfile profile) : IAsyncDisposable
     {
