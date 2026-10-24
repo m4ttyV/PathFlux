@@ -34,10 +34,10 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
     }
     public EngineStatus Status => engineStarted && engine is not null && engine.HasExited
         ? new(EngineState.Failed, "Движок аварийно завершился. Проверьте сеть; системный kill switch отсутствует.", Udp: udpBridges?.Snapshot() ?? lastUdp)
-        : new(state, state == EngineState.Failed ? failureMessage : state == EngineState.Degraded
+        : new(state, (state == EngineState.Failed ? failureMessage : state == EngineState.Degraded
             ? udpBridges?.Bridges.Count > 0 ? "TUN запущен. UDP Experimental: проверяйте статистику; Discord не принят, DNS системный, kill switch отсутствует."
                 : "TUN запущен. Выборочный TCP доступен с ограничениями; UDP заблокирован, DNS системный."
-            : stoppedMessage, engine?.Id, udpBridges?.Snapshot() ?? lastUdp);
+            : stoppedMessage) + (udpBridges?.TcpBridges.Count > 0 ? " " + string.Join(" ", udpBridges.TcpBridges.Values.Select(b => b.Diagnostic)) : ""), engine?.Id, udpBridges?.Snapshot() ?? lastUdp);
 
     public async Task<AgentReply> StartAsync(ProxyConfiguration config, Dictionary<string, ProxyCredentials> credentials, CancellationToken ct)
     {
@@ -61,7 +61,7 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
             var memorySecrets = new MemorySecrets(credentials);
             udpBridges = await AgentUdpBridges.CreateAsync(config, memorySecrets, ct);
             lastUdp = [];
-            string json = await new SingBoxConfigGenerator(memorySecrets).GenerateAgentAsync(config, udpBridges.Bridges, ct, version);
+            string json = await new SingBoxConfigGenerator(memorySecrets).GenerateAgentAsync(config, udpBridges.Bridges, ct, version, udpBridges.TcpBridges);
             if (!await EngineBinary.CheckAsync(config.Settings.EnginePath, json, ct))
                 throw new InvalidOperationException("sing-box check отклонил конфигурацию.");
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux");
@@ -81,6 +81,9 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
             engineStarted = true;
             // The child cannot load config or change routes before stdin is completed below.
             job.Assign(engine);
+            await File.WriteAllTextAsync(journal + ".tmp", JsonSerializer.Serialize(new { metadata.SchemaVersion, metadata.AgentPid, metadata.StartedUtc,
+                metadata.InterfaceName, metadata.State, EnginePid = engine.Id, EngineStartedUtcTicks = engine.StartTime.ToUniversalTime().Ticks, Baseline = networkBefore }), ct);
+            File.Move(journal + ".tmp", journal, true);
             drainOutput = engine.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
             drainError = engine.StandardError.BaseStream.CopyToAsync(Stream.Null);
             networkTouched = true;

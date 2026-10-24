@@ -8,6 +8,15 @@ namespace PathFlux.Engine.Tests;
 public class NetworkTransitionRecoveryTests
 {
     [Fact]
+    public void EngineRecoveryIdentityIncludesStartTimeSoReusedPidDoesNotBlockAnotherSession()
+    {
+        using var current = System.Diagnostics.Process.GetCurrentProcess();
+        long ticks = current.StartTime.ToUniversalTime().Ticks;
+        Assert.True(RecoveryJournal.IsRecordedEngineRunning(current.Id, ticks));
+        Assert.False(RecoveryJournal.IsRecordedEngineRunning(current.Id, ticks - 1));
+        Assert.False(RecoveryJournal.IsRecordedEngineRunning(int.MaxValue, ticks));
+    }
+    [Fact]
     public async Task DisposingAnUnusedAdapterDoesNotFinalizeAPreviousSessionsJournal()
     {
         string directory = Path.Combine(Path.GetTempPath(), "PathFlux-passive-" + Guid.NewGuid().ToString("N"));

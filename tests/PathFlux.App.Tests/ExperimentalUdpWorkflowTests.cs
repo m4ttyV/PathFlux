@@ -14,9 +14,11 @@ public sealed partial class WorkflowTests
         vm.ExperimentalSocksUdp = true; await vm.SaveSettingsCommand.ExecuteAsync(null);
         Assert.True(store.Configuration.Settings.ExperimentalSocksUdp);
         vm.ProfileUdpRelayMode = UdpRelayMode.DockerNat; vm.ProfileUdpPortFirst = "20000"; vm.ProfileUdpPortLast = "20030";
+        vm.ProfileUseTlsServerNameForTcp = true;
         await vm.SaveProfileCommand.ExecuteAsync(null);
         var profile = Assert.Single(store.Configuration.Profiles);
         Assert.Equal(UdpRelayMode.DockerNat, profile.UdpRelayMode); Assert.Equal(20000, profile.UdpPublishedPortFirst);
+        Assert.True(profile.UseTlsServerNameForTcp); Assert.True(vm.ProfileUseTlsServerNameForTcp);
         vm.RuleProfile = vm.Profiles.Single(); vm.RuleNetwork = NetworkTransport.Udp;
         await vm.SaveRuleCommand.ExecuteAsync(null);
         Assert.Equal(NetworkTransport.Udp, Assert.Single(store.Configuration.Rules).Network);

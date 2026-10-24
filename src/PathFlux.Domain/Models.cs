@@ -22,6 +22,8 @@ public sealed record ProxyProfile
     public string? TlsServerName { get; init; }
     public UdpProbeEvidence? UdpVerification { get; init; }
     public UdpRelayMode UdpRelayMode { get; init; }
+    public bool UseTlsServerNameForTcp { get; init; }
+    public string TcpIpv4DohServer { get; init; } = "https://1.1.1.1/dns-query";
     public int? UdpPublishedPortFirst { get; init; }
     public int? UdpPublishedPortLast { get; init; }
     public override string ToString() => Name;

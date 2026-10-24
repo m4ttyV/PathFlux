@@ -51,6 +51,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private string _profileHost = "127.0.0.1";
     [ObservableProperty] private string _profilePort = "1080";
     [ObservableProperty] private UdpRelayMode _profileUdpRelayMode;
+    [ObservableProperty] private bool _profileUseTlsServerNameForTcp;
+    [ObservableProperty] private string _profileTcpIpv4DohServer = "https://1.1.1.1/dns-query";
     [ObservableProperty] private string _profileUdpPortFirst = "";
     [ObservableProperty] private string _profileUdpPortLast = "";
     [ObservableProperty] private bool _profileEnabled = true;
@@ -132,6 +134,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         ProfileName = p.Name; ProfileProtocol = p.Protocol; ProfileHost = p.Host; ProfilePort = p.Port.ToString();
         ProfileEnabled = p.Enabled; ProfileTlsServerName = p.TlsServerName ?? "";
         ProfileUdpRelayMode = p.UdpRelayMode; ProfileUdpPortFirst = p.UdpPublishedPortFirst?.ToString() ?? ""; ProfileUdpPortLast = p.UdpPublishedPortLast?.ToString() ?? "";
+        ProfileUseTlsServerNameForTcp = p.UseTlsServerNameForTcp;
+        ProfileTcpIpv4DohServer = p.TcpIpv4DohServer;
         ClearCredentialEditor();
         CredentialStatus = p.CredentialsRef is null ? "Авторизация не сохранена."
             : "Авторизация защищена Windows DPAPI. Пароль не отображается.";
@@ -174,7 +178,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!CanEdit) return;
         SelectedProfile = null; ProfileName = "Новый прокси"; ProfileProtocol = ProxyProtocol.Socks5;
         ProfileHost = "127.0.0.1"; ProfilePort = "1080"; ProfileEnabled = true; ProfileTlsServerName = "";
-        ProfileUdpRelayMode = UdpRelayMode.Standard; ProfileUdpPortFirst = ""; ProfileUdpPortLast = "";
+        ProfileUdpRelayMode = UdpRelayMode.Standard; ProfileUdpPortFirst = ""; ProfileUdpPortLast = ""; ProfileUseTlsServerNameForTcp = false; ProfileTcpIpv4DohServer = "https://1.1.1.1/dns-query";
         ClearCredentialEditor(); CredentialStatus = "Авторизация не сохранена.";
     }
     [RelayCommand] private Task SaveProfileAsync() => RunAsync(async ct =>
@@ -203,7 +207,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             Id = previous?.Id ?? Guid.NewGuid(), Name = ProfileName.Trim(), Enabled = ProfileEnabled,
             Protocol = ProfileProtocol, Host = ProfileHost.Trim(), Port = port, CredentialsRef = reference,
             TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null,
-            UdpRelayMode = IsSocks ? ProfileUdpRelayMode : UdpRelayMode.Standard, UdpPublishedPortFirst = first, UdpPublishedPortLast = last
+            UdpRelayMode = IsSocks ? ProfileUdpRelayMode : UdpRelayMode.Standard, UdpPublishedPortFirst = first, UdpPublishedPortLast = last,
+            UseTlsServerNameForTcp = IsSocks && ProfileUseTlsServerNameForTcp, TcpIpv4DohServer = ProfileTcpIpv4DohServer.Trim()
         };
         if (previous is not null && UdpVerificationPolicy.Fingerprint(previous) == UdpVerificationPolicy.Fingerprint(p))
             p = p with { UdpVerification = previous.UdpVerification };

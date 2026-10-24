@@ -136,7 +136,7 @@ public sealed class JsonConfigurationStore(string path) : IConfigurationStore, I
             ValidateStructure(configuration);
             if (version == 1) configuration = configuration with { SchemaVersion = CurrentSchema,
                 Settings = configuration.Settings with { ExperimentalSocksUdp = false },
-                Profiles = configuration.Profiles.Select(p => p with { UdpRelayMode = UdpRelayMode.Standard, UdpPublishedPortFirst = null, UdpPublishedPortLast = null }).ToList() };
+                Profiles = configuration.Profiles.Select(p => p with { UdpRelayMode = UdpRelayMode.Standard, UdpPublishedPortFirst = null, UdpPublishedPortLast = null, UseTlsServerNameForTcp = false }).ToList() };
             return configuration;
         }
         catch (JsonException)

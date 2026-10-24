@@ -18,8 +18,7 @@ public static class RecoveryJournal
             if (baseline.Routes is null || baseline.Adapters is null) throw new InvalidOperationException("InvalidRecoveryBaseline");
             EnsureNoAgent();
             // Do not finalize evidence while an engine may still own sockets or recreate its interface.
-            foreach (var process in System.Diagnostics.Process.GetProcessesByName("sing-box"))
-                using (process) { if (!process.HasExited) throw new InvalidOperationException("EngineStillRunning"); }
+            EnsureRecordedEngineExited(document.RootElement);
             var current = await WindowsNetworkState.CaptureAsync(ct);
             if (current.OwnedCleanupIssues(SingBoxConfigGenerator.InterfaceName).Length != 0)
                 throw new InvalidOperationException("PathFluxResourcesRemain");
@@ -30,6 +29,31 @@ public static class RecoveryJournal
         string archive = path + (matched ? ".verified-" : ".unconfirmed-network-change-") + Guid.NewGuid().ToString("N");
         File.Move(path, archive, false);
         return new(archive, matched);
+    }
+    internal static bool IsRecordedEngineRunning(int pid, long startedUtcTicks)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == startedUtcTicks;
+        }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+    private static void EnsureRecordedEngineExited(JsonElement root)
+    {
+        if (root.TryGetProperty("EnginePid", out var pid))
+        {
+            if (!pid.TryGetInt32(out int id) || id < 1 || !root.TryGetProperty("EngineStartedUtcTicks", out var started) || !started.TryGetInt64(out long ticks) || ticks < 1)
+                throw new InvalidOperationException("InvalidRecordedEngineIdentity");
+            if (IsRecordedEngineRunning(id, ticks)) throw new InvalidOperationException("EngineStillRunning");
+        }
+        else
+        {
+            // Legacy evidence has no process identity: keep the conservative rule for those files only.
+            foreach (var process in System.Diagnostics.Process.GetProcessesByName("sing-box"))
+                using (process) { if (!process.HasExited) throw new InvalidOperationException("LegacyEngineIdentityUnknown"); }
+        }
     }
     public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux", "network-recovery.json");
     public static bool HasPendingBaseline(string path)

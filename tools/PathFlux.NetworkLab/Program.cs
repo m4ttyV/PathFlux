@@ -4,6 +4,16 @@ using PathFlux.Engine;
 using PathFlux.Application;
 using PathFlux.Domain;
 
+if (args.Length == 4 && args[0] == "probe-voice-wss" && int.TryParse(args[2], out int voicePort))
+{
+    var result = await VoiceWebSocketProbe.RunAsync(args[1], voicePort, args[3], CancellationToken.None);
+    Console.WriteLine(JsonSerializer.Serialize(result)); return result.Success ? 0 : 10;
+}
+if (args.Length == 6 && args[0] == "voice-tcp" && args[^1] == "--allow-system-tun")
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+    return await VoiceTcpAudit.RunAsync(args[1], args[2], args[3], args[4], deadline.Token);
+}
 if (args.Length == 3 && args[0] == "recover-owned" && args[2] == "--preserve-network-change" && Path.IsPathFullyQualified(args[1]))
 {
     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));

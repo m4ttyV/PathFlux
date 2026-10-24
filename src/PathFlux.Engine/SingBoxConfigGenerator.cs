@@ -13,22 +13,25 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
         => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, guards: null);
     // Agent owns the live guards; a feature flag alone cannot create a working UDP outbound.
     internal Task<string> GenerateAgentAsync(ProxyConfiguration configuration, IReadOnlyDictionary<Guid, StrictSocksUdpBridge> guards,
-        CancellationToken ct, Version? engineVersion = null)
+        CancellationToken ct, Version? engineVersion = null, IReadOnlyDictionary<Guid, TlsNameSocksBridge>? tcpGuards = null)
         => GenerateCoreAsync(configuration, ct, false, engineVersion, configuration.Settings.ExperimentalSocksUdp ?
-            guards.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)) : null);
+            guards.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)) : null,
+            tcpGuards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)));
     // sing-box check does not connect. Validation must not create transport listeners in the unelevated UI.
     internal Task<string> GenerateValidationAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null)
     {
         var used = configuration.Rules.Where(ExperimentalUdpPolicy.UsesUdp).Select(r => r.ProfileId).ToHashSet();
         var descriptors = configuration.Settings.ExperimentalSocksUdp ? configuration.Profiles.Where(p => used.Contains(p.Id) && p.Protocol == ProxyProtocol.Socks5)
             .ToDictionary(p => p.Id, p => new UdpOutbound(new(IPAddress.Loopback, 9), new("validation-only", "validation-only"))) : null;
-        return GenerateCoreAsync(configuration, ct, false, engineVersion, descriptors);
+        var tcp = configuration.Profiles.Where(p => p.UseTlsServerNameForTcp && configuration.Rules.Any(r => r.Enabled && r.Action == RouteAction.Proxy && r.ProfileId == p.Id && r.Network is NetworkTransport.Tcp or NetworkTransport.Both))
+            .ToDictionary(p => p.Id, p => new UdpOutbound(new(IPAddress.Loopback, 9), new("validation-only", "validation-only")));
+        return GenerateCoreAsync(configuration, ct, false, engineVersion, descriptors, tcp);
     }
     internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null,
         IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards = null)
         => GenerateCoreAsync(configuration, ct, false, engineVersion, guards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)));
     private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion,
-        IReadOnlyDictionary<Guid, UdpOutbound>? guards)
+        IReadOnlyDictionary<Guid, UdpOutbound>? guards, IReadOnlyDictionary<Guid, UdpOutbound>? tcpGuards = null)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
@@ -57,6 +60,12 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
                     outbound["username"] = credential.Username; outbound["password"] = credential.Password;
                 }
             }
+            if (p.UseTlsServerNameForTcp && tcpGuards?.TryGetValue(p.Id, out var tcpBridge) == true)
+            {
+                outbound["server"] = tcpBridge.EndPoint.Address.ToString(); outbound["server_port"] = tcpBridge.EndPoint.Port;
+                outbound["username"] = redactSecrets ? "REDACTED" : tcpBridge.LocalCredentials.Username;
+                outbound["password"] = redactSecrets ? "REDACTED" : tcpBridge.LocalCredentials.Password;
+            }
             outbounds.Add(outbound);
             if (p.Protocol == ProxyProtocol.Socks5 && guards?.TryGetValue(p.Id, out var bridge) == true)
                 outbounds.Add(new JsonObject { ["type"] = "socks", ["tag"] = UdpTag(p.Id), ["server"] = bridge.EndPoint.Address.ToString(),
@@ -83,9 +92,11 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             foreach (var network in transports)
             {
                 var rule = new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value), ["network"] = network };
+                bool missingTcpBridge = network == "tcp" && r.Action == RouteAction.Proxy &&
+                    policy.Profiles.Any(p => p.Id == r.ProfileId && p.UseTlsServerNameForTcp) && (r.ProfileId is not { } tcpId || tcpGuards?.ContainsKey(tcpId) != true);
                 // A verified relay probe does not prove transparent TUN routing. Proxy UDP remains blocked.
                 bool labSocksUdp = guards is not null && r.ProfileId is { } profileId && guards.ContainsKey(profileId) && policy.Profiles.Any(p => p.Id == profileId && p.Protocol == ProxyProtocol.Socks5);
-                if (r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp" && !labSocksUdp))
+                if (missingTcpBridge || r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp" && !labSocksUdp))
                     rule["action"] = "reject";
                 else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : network == "udp" ? UdpTag(r.ProfileId!.Value) : Tag(r.ProfileId!.Value); }
                 rules.Add(rule);

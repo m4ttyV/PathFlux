@@ -84,6 +84,12 @@ public static class ConfigurationValidator
 
     private static void ValidateProfile(ProxyProfile profile, List<ValidationIssue> issues)
     {
+        if (profile.UseTlsServerNameForTcp && profile.Protocol != ProxyProtocol.Socks5)
+            issues.Add(new("profile.tcpSni", "Режим TCP через TLS/SNI поддерживается только для SOCKS5."));
+        if (profile.UseTlsServerNameForTcp && (!Uri.TryCreate(profile.TcpIpv4DohServer, UriKind.Absolute, out var doh) || doh.Scheme != "https" ||
+            !IPAddress.TryParse(doh.Host, out var address) || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+            !ExperimentalUdpPolicy.IsUnicast(address) || doh.UserInfo.Length != 0 || doh.Query.Length != 0 || doh.Fragment.Length != 0))
+            issues.Add(new("profile.tcpDoh", "Для TCP/IPv4 укажите HTTPS DoH JSON endpoint с буквальным IPv4, без логина, параметров или фрагмента."));
         if (!IsNameValid(profile.Name))
             issues.Add(new("profile.name", "Имя профиля должно содержать от 1 до 120 символов без управляющих символов."));
         if (!Enum.IsDefined(profile.Protocol))
