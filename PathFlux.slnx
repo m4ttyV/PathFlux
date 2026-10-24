@@ -12,5 +12,8 @@
     <Project Path="tests/PathFlux.Infrastructure.Tests/PathFlux.Infrastructure.Tests.csproj" />
     <Project Path="tests/PathFlux.Policy.Tests/PathFlux.Policy.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/PathFlux.NetworkLab/PathFlux.NetworkLab.csproj" />
+  </Folder>
   <Project Path="PathFlux/PathFlux.csproj" />
 </Solution>

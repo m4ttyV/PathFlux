@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Net;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PathFlux.Application;
@@ -66,6 +67,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private ProxyProfile? _diagnosticProfile;
     [ObservableProperty] private string _targetHost = "example.com";
     [ObservableProperty] private string _targetPort = "443";
+    [ObservableProperty] private string _udpEchoHost = "";
+    [ObservableProperty] private string _udpEchoPort = "";
     [ObservableProperty] private string _diagnosticText = "Проверка ещё не выполнялась. TCP CONNECT не доказывает работу TUN или UDP.";
     [ObservableProperty] private string _enginePath = "";
     [ObservableProperty] private string _engineSha256 = "";
@@ -83,11 +86,24 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     public bool IsProxyAction => RuleAction == RouteAction.Proxy;
     public string ProfileCount => Profiles.Count.ToString();
     public string RuleCount => Rules.Count.ToString();
+    public string ProfileUdpStatus => SelectedProfile is { } profile
+        ? ProfileEditorIdentityMatches(profile) ? DescribeUdp(profile)
+            : "Параметры профиля изменены в форме. Сохраните профиль и повторите UDP echo-проверку."
+        : "Новый профиль: передача UDP через relay ещё не проверялась.";
+    public string DiagnosticUdpStatus => DiagnosticProfile is { } profile ? DescribeUdp(profile)
+        : "Выберите профиль. Положительный UDP echo подтверждает только проверенный relay и цель.";
     public string EditingHint => EngineActive ? "Для изменения профилей, правил и настроек сначала остановите движок."
         : "Изменения сохраняются локально. Чтобы применить правила, запустите движок.";
     partial void OnIsBusyChanged(bool value) => NotifyPermissions();
     partial void OnIsInitializedChanged(bool value) => NotifyPermissions();
-    partial void OnProfileProtocolChanged(ProxyProtocol value) => OnPropertyChanged(nameof(IsHttps));
+    partial void OnProfileProtocolChanged(ProxyProtocol value)
+    { OnPropertyChanged(nameof(IsHttps)); OnPropertyChanged(nameof(ProfileUdpStatus)); }
+    partial void OnProfileHostChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
+    partial void OnProfilePortChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
+    partial void OnProfileTlsServerNameChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
+    partial void OnReplaceCredentialsChanged(bool value) => OnPropertyChanged(nameof(ProfileUdpStatus));
+    partial void OnRemoveCredentialsChanged(bool value) => OnPropertyChanged(nameof(ProfileUdpStatus));
+    partial void OnDiagnosticProfileChanged(ProxyProfile? value) => OnPropertyChanged(nameof(DiagnosticUdpStatus));
     partial void OnRuleActionChanged(RouteAction value) => OnPropertyChanged(nameof(IsProxyAction));
     partial void OnProcessSearchChanged(string value) => FilterProcesses();
     partial void OnProcessSortChanged(string value) => FilterProcesses();
@@ -95,12 +111,13 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     partial void OnSelectedProfileChanged(ProxyProfile? value)
     {
         var p = value;
-        if (p is null) return;
+        if (p is null) { OnPropertyChanged(nameof(ProfileUdpStatus)); return; }
         ProfileName = p.Name; ProfileProtocol = p.Protocol; ProfileHost = p.Host; ProfilePort = p.Port.ToString();
         ProfileEnabled = p.Enabled; ProfileTlsServerName = p.TlsServerName ?? "";
         ClearCredentialEditor();
         CredentialStatus = p.CredentialsRef is null ? "Авторизация не сохранена."
             : "Авторизация защищена Windows DPAPI. Пароль не отображается.";
+        OnPropertyChanged(nameof(ProfileUdpStatus));
     }
     partial void OnSelectedRuleChanged(RoutingRule? value)
     {
@@ -124,7 +141,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             RefreshSeconds = _configuration.Settings.ProcessRefreshSeconds.ToString();
             ThemeChanged?.Invoke(SelectedTheme);
             var c = await engine.GetCapabilitiesAsync(ct);
-            CapabilityText = $"Имя EXE: {c.ProcessName} · путь EXE: {c.ExecutablePath}\nTCP: {c.Tcp} · UDP: {c.Udp}\nТочный PID: {c.ExactPid} · дочерние процессы: {c.Children}\nСистемный kill switch: {c.KillSwitch}";
+            CapabilityText = $"Имя EXE: {c.ProcessName} · путь EXE: {c.ExecutablePath}\nTCP через TUN: {c.Tcp} · UDP через TUN: {c.Udp}\nТочный PID: {c.ExactPid} · дочерние процессы: {c.Children}\nСистемный kill switch: {c.KillSwitch}";
             await RefreshProcessesCoreAsync(ct);
             await UpdateStatusAsync(ct);
             IsInitialized = true;
@@ -160,6 +177,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             Protocol = ProfileProtocol, Host = ProfileHost.Trim(), Port = port, CredentialsRef = reference,
             TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null
         };
+        if (previous is not null && UdpVerificationPolicy.Fingerprint(previous) == UdpVerificationPolicy.Fingerprint(p))
+            p = p with { UdpVerification = previous.UdpVerification };
         var next = _configuration with { Profiles = _configuration.Profiles.Where(x => x.Id != p.Id).Append(p).ToList() };
         try { await PersistAsync(next, ct); }
         catch { if (newReference is not null) await TryDeleteSecretAsync(newReference, CancellationToken.None); throw; }
@@ -273,6 +292,36 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         DiagnosticText = $"UDP · {DateTime.Now:HH:mm:ss}\n{r.Stage}: {r.Message}\nСтатус: {r.Udp}. Ответ UDP ASSOCIATE не доказывает передачу UDP через TUN.";
         AddLog("UDP-диагностика завершена; фактическая передача требует отдельной проверки.");
     });
+    [RelayCommand] private Task TestUdpEchoAsync() => RunAsync(async ct =>
+    {
+        RequireStopped();
+        if (diagnostics is not IUdpRelayDiagnostics relay)
+            throw new EditorValidationException("Этот диагностический адаптер не поддерживает UDP echo.");
+        var profile = DiagnosticProfile ?? throw new EditorValidationException("Выберите профиль для UDP echo.");
+        if (!UdpVerificationPolicy.IsProbeTarget(UdpEchoHost.Trim(), out var target)
+            || !int.TryParse(UdpEchoPort, out var port) || port is < 1 or > 65535)
+            throw new EditorValidationException("Укажите буквальный IP контролируемого вами UDP echo-сервера и порт от 1 до 65535. DNS-имя не допускается.");
+        var fingerprint = UdpVerificationPolicy.Fingerprint(profile);
+        var result = await relay.TestUdpRelayAsync(profile, new(target.ToString(), port), ct);
+        var current = _configuration.Profiles.FirstOrDefault(p => p.Id == profile.Id);
+        if (current is null || UdpVerificationPolicy.Fingerprint(current) != fingerprint
+            || result.Evidence.ProfileFingerprint != fingerprint)
+            throw new EditorValidationException("Профиль изменился во время проверки. Результат не сохранён; повторите UDP echo.");
+        if (!UdpVerificationPolicy.IsProbeTarget(result.Evidence.TargetHost, out var evidenceTarget) || !evidenceTarget.Equals(target)
+            || result.Evidence.TargetPort != port)
+            throw new EditorValidationException("Диагностический адаптер вернул результат для другой цели. Проверка не сохранена.");
+        var details = DescribeProbe(result);
+        DiagnosticText = details + "\nРезультат получен; сохранение…";
+        var next = _configuration with
+        { Profiles = _configuration.Profiles.Select(p => p.Id == profile.Id ? p with { UdpVerification = result.Evidence } : p).ToList() };
+        try { await PersistAsync(next, ct); }
+        catch { DiagnosticText = details + "\nНе удалось сохранить результат. Исторический статус профиля не изменён."; throw; }
+        DiagnosticText = details + "\nРезультат сохранён локально. UDP-правила Proxy остаются Reject до приёмки маршрутизации TUN.";
+        Notice = result.Success ? "UDP echo завершён. Подтверждён только relay к указанной цели; TUN и Discord voice не проверены."
+            : "UDP echo не подтвердил передачу. Результат диагностики сохранён; скрытого Direct fallback нет.";
+        AddLog(result.Success ? "UDP echo: результат сохранён; TUN и Discord voice не проверены."
+            : "UDP echo: передача не подтверждена; результат сохранён.");
+    }, true);
     [RelayCommand] private Task SaveSettingsAsync() => RunAsync(async ct =>
     {
         RequireStopped();
@@ -343,6 +392,35 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     {
         OnPropertyChanged(nameof(EngineActive)); OnPropertyChanged(nameof(CanEdit)); OnPropertyChanged(nameof(CanStart));
         OnPropertyChanged(nameof(CanStop)); OnPropertyChanged(nameof(CanUseTools)); OnPropertyChanged(nameof(EditingHint));
+        OnPropertyChanged(nameof(ProfileUdpStatus)); OnPropertyChanged(nameof(DiagnosticUdpStatus));
+    }
+    private bool ProfileEditorIdentityMatches(ProxyProfile profile)
+    {
+        if (ReplaceCredentials || RemoveCredentials && profile.CredentialsRef is not null
+            || !int.TryParse(ProfilePort, out var port)) return false;
+        var edited = profile with
+        {
+            Protocol = ProfileProtocol, Host = ProfileHost.Trim(), Port = port,
+            TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null
+        };
+        return UdpVerificationPolicy.Fingerprint(profile) == UdpVerificationPolicy.Fingerprint(edited);
+    }
+    private static string DescribeUdp(ProxyProfile profile)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var description = UdpVerificationPolicy.Describe(profile, now);
+        return description + (UdpVerificationPolicy.IsCurrent(profile, now)
+            && profile.UdpVerification is { } evidence && evidence.CheckedAtUtc <= DateTimeOffset.MaxValue - UdpVerificationPolicy.Validity
+            ? $"\nСрок актуальности — 15 минут, до {(evidence.CheckedAtUtc + UdpVerificationPolicy.Validity).ToLocalTime():dd.MM.yyyy HH:mm:ss}."
+            : "\nПоложительный результат актуален 15 минут. UDP-маршрутизация TUN остаётся неподтверждённой.");
+    }
+    private static string DescribeProbe(UdpRelayProbeResult result)
+    {
+        var e = result.Evidence;
+        var latency = e.AverageRoundTripMs is { } ms ? $"{ms:F1} мс" : "нет подтверждённых ответов";
+        return $"UDP echo · {e.CheckedAtUtc.ToLocalTime():dd.MM.yyyy HH:mm:ss}\nЭтап: {result.Stage} · {result.Message}"
+            + $"\nСтатус relay: {e.Status}\nОтправлено: {e.SentPackets}; получено точных ответов: {e.ReceivedPackets}. Средний RTT: {latency}."
+            + "\nПроверяется только relay к выбранному echo-серверу. TUN, DNS и Discord voice не проверены.";
     }
     private void RequireStopped()
     { if (EngineActive) throw new EditorValidationException("Сначала остановите движок: применение изменений во время работы пока недоступно."); }

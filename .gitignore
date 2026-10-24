@@ -366,3 +366,4 @@ FodyWeavers.xsd
 .local/
 artifacts/
 TestResults/
+lab-results/

@@ -1,0 +1,51 @@
+using System.Text.Json.Nodes;
+using PathFlux.Application;
+using PathFlux.Domain;
+using PathFlux.Engine;
+namespace PathFlux.NetworkLab;
+
+public enum LabScenario { Path, Name, Disabled, Block, Priority, ProfileTwo }
+public static class LabPolicy
+{
+    public const string InterfaceName = "PathFlux-Lab-TUN";
+    public const string TargetAddress = "198.18.0.1";
+    public const int TargetPort = 4444;
+    public const string ProbeName = "PathFlux.LabProbe.exe";
+    public const string InterfaceAddress = "172.30.254.1/32";
+    public static ProxyConfiguration Create(LabScenario scenario, string selectedPath, ProxyProfile first, ProxyProfile second)
+    {
+        var rule = new RoutingRule { Name = "Lab selected path", Network = NetworkTransport.Tcp,
+            Selector = new(SelectorKind.ExecutablePath, selectedPath), ProfileId = first.Id };
+        var rules = new List<RoutingRule> { rule };
+        switch (scenario)
+        {
+            case LabScenario.Name: rules = [rule with { Selector = new(SelectorKind.ProcessName, ProbeName) }]; break;
+            case LabScenario.Disabled: rules = [rule with { Enabled = false }]; break;
+            case LabScenario.Block: rules = [rule with { Action = RouteAction.Block, ProfileId = null }]; break;
+            case LabScenario.Priority:
+                rules = [rule, rule with { Id = Guid.NewGuid(), Priority = 1, Action = RouteAction.Block, ProfileId = null }]; break;
+            case LabScenario.ProfileTwo: rules = [rule with { ProfileId = second.Id }]; break;
+        }
+        return new() { Profiles = [first, second], Rules = rules };
+    }
+    public static async Task<string> GenerateAsync(ProxyConfiguration config, CancellationToken ct, Version? engineVersion = null)
+    {
+        // Use actual domain rule compiler. Only TUN scope is narrowed for this isolated lab.
+        var root = JsonNode.Parse(await new SingBoxConfigGenerator(new NoSecrets()).GenerateAsync(config, ct, engineVersion: engineVersion))!;
+        root["inbounds"] = new JsonArray(new JsonObject
+        {
+            ["type"] = "tun", ["tag"] = "tun-in", ["interface_name"] = InterfaceName,
+            ["address"] = new JsonArray(InterfaceAddress), ["route_address"] = new JsonArray(TargetAddress + "/32"),
+            ["auto_route"] = true, ["strict_route"] = false, ["stack"] = "mixed", ["mtu"] = 1500
+        });
+        if (engineVersion >= new Version(1, 15, 0)) root["inbounds"]![0]!.AsObject().Remove("stack");
+        // No IPv6 address, no default route, no next-address DNS for a /32 interface prefix.
+        return root.ToJsonString();
+    }
+    private sealed class NoSecrets : ISecretStore
+    {
+        public Task<ProxyCredentials?> GetAsync(string reference, CancellationToken ct) => Task.FromResult<ProxyCredentials?>(null);
+        public Task<string> StoreAsync(ProxyCredentials credentials, CancellationToken ct) => throw new NotSupportedException();
+        public Task DeleteAsync(string reference, CancellationToken ct) => throw new NotSupportedException();
+    }
+}

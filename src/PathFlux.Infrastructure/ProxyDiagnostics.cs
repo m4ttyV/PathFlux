@@ -11,7 +11,7 @@ using PathFlux.Domain;
 namespace PathFlux.Infrastructure;
 
 /// <summary>Active proxy handshakes. A successful CONNECT proves a tunnel was accepted, not application traffic interception.</summary>
-public sealed class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = null) : IProxyDiagnostics
+public sealed partial class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = null) : IProxyDiagnostics, IUdpRelayDiagnostics
 {
     private readonly TimeSpan _timeout = timeout ?? TimeSpan.FromSeconds(15);
 
@@ -93,6 +93,12 @@ public sealed class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = n
 
     private static async Task ProbeSocksAsync(Stream stream, string host, int port, bool udp, ProxyCredentials? credentials, CancellationToken ct)
     {
+        await AuthenticateSocksAsync(stream, credentials, ct).ConfigureAwait(false);
+        await SendSocksCommandAsync(stream, host, port, udp, ct).ConfigureAwait(false);
+    }
+
+    private static async Task AuthenticateSocksAsync(Stream stream, ProxyCredentials? credentials, CancellationToken ct)
+    {
         var method = credentials is null ? (byte)0 : (byte)2;
         await stream.WriteAsync(new byte[] { 5, 1, method }, ct).ConfigureAwait(false);
         var selection = new byte[2];
@@ -127,6 +133,10 @@ public sealed class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = n
             }
         }
 
+    }
+
+    private static async Task SendSocksCommandAsync(Stream stream, string host, int port, bool udp, CancellationToken ct)
+    {
         byte[] address;
         byte addressType;
         if (IPAddress.TryParse(host, out var ip))

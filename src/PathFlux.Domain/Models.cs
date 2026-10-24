@@ -19,6 +19,7 @@ public sealed record ProxyProfile
     public int Port { get; init; } = 1080;
     public string? CredentialsRef { get; init; }
     public string? TlsServerName { get; init; }
+    public UdpProbeEvidence? UdpVerification { get; init; }
     public override string ToString() => Name;
 }
 public sealed record ProcessInstanceId(int Pid, DateTimeOffset StartTimeUtc);

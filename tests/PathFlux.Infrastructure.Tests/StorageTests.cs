@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using PathFlux.Application;
 using PathFlux.Domain;
 using PathFlux.Infrastructure;
 
@@ -10,6 +11,30 @@ public sealed class StorageTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "PathFlux.Tests", Guid.NewGuid().ToString("N"));
     private string FilePath => Path.Combine(_directory, "configuration.json");
     private readonly CancellationToken _ct = CancellationToken.None;
+
+    [Fact]
+    public async Task LegacySchemaOneRoundtripsOptionalUdpEvidenceThroughActualConfigurationStore()
+    {
+        Directory.CreateDirectory(_directory);
+        await File.WriteAllTextAsync(FilePath,
+            """{"schemaVersion":1,"profiles":[{"name":"Legacy SOCKS5","protocol":"socks5","host":"127.0.0.1","port":1080}],"rules":[],"settings":{}}""", _ct);
+        var store = new JsonConfigurationStore(FilePath);
+        var original = await store.LoadAsync(_ct);
+        var profile = Assert.Single(original.Profiles);
+        Assert.Null(profile.UdpVerification);
+        var updated = profile with { UdpVerification = new(UdpVerificationPolicy.Fingerprint(profile), DateTimeOffset.UtcNow,
+            UdpRelayStatus.Verified, "127.0.0.1", 4444, 3, 3, 1.125) };
+        await store.SaveAsync(original with { Profiles = [updated] }, _ct);
+        var restored = await new JsonConfigurationStore(FilePath).LoadAsync(_ct);
+        Assert.Equal(updated, Assert.Single(restored.Profiles));
+        Assert.Equal(1, restored.SchemaVersion);
+        var json = await File.ReadAllTextAsync(FilePath, _ct);
+        Assert.Contains("\"udpVerification\"", json);
+        Assert.Contains("\"verified\"", json);
+        foreach (var forbidden in new[] { "password", "username", "payload", "nonce" })
+            Assert.DoesNotContain(forbidden, json, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(Assert.Single((await new JsonConfigurationStore(FilePath + ".bak").LoadAsync(_ct)).Profiles).UdpVerification);
+    }
 
     [Fact]
     public async Task ConfigurationRoundtripUsesOnlyOpaqueCredentialReferences()

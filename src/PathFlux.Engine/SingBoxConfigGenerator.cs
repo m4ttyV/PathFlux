@@ -6,9 +6,8 @@ namespace PathFlux.Engine;
 
 public sealed class SingBoxConfigGenerator(ISecretStore secrets)
 {
-    public const string EngineVersion = "1.12.12";
     public const string InterfaceName = "PathFlux-TUN";
-    public async Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false)
+    public async Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false, Version? engineVersion = null)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
@@ -57,7 +56,7 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             foreach (var network in transports)
             {
                 var rule = new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value), ["network"] = network };
-                // No upstream UDP verification state is persisted in the MVP. All matching proxy UDP fails closed.
+                // A verified relay probe does not prove transparent TUN routing. Proxy UDP remains blocked.
                 if (r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp"))
                     rule["action"] = "reject";
                 else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : Tag(r.ProfileId!.Value); }
@@ -77,6 +76,7 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             ["outbounds"] = outbounds,
             ["route"] = new JsonObject { ["rules"] = rules, ["final"] = "direct", ["auto_detect_interface"] = true, ["default_domain_resolver"] = "local-dns" }
         };
+        if (engineVersion >= new Version(1, 15, 0)) root["inbounds"]![0]!.AsObject().Remove("stack");
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
     public static string Tag(Guid id) => $"proxy-{id:D}";

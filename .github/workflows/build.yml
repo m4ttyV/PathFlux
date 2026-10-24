@@ -3,6 +3,10 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine-version: ['1.12.2', '1.12.12', '1.13.21', '1.14.3']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -10,7 +14,16 @@ jobs:
           global-json-file: global.json
       - run: dotnet restore PathFlux.slnx --locked-mode
       - run: dotnet build PathFlux.slnx -c Release --no-restore
+      - name: Download and verify engine for compatibility tests
+        shell: pwsh
+        run: |
+          $engine = .\scripts\get-engine.ps1 -Version '${{ matrix.engine-version }}' -Destination '.local\engine'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PATHFLUX_TEST_ENGINE=$($engine.EnginePath)"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PATHFLUX_TEST_ENGINE_SHA256=$($engine.EngineSha256)"
       - run: dotnet test PathFlux.slnx -c Release --no-build --logger trx --results-directory TestResults
+      - name: Prepare isolated network lab without TUN
+        shell: pwsh
+        run: .\scripts\run-tun-lab.ps1 -EnginePath $env:PATHFLUX_TEST_ENGINE -EngineSha256 $env:PATHFLUX_TEST_ENGINE_SHA256 -Output '.local\ci-lab-prepare'
       - name: Native UI startup smoke test
         shell: pwsh
         run: |
@@ -21,5 +34,5 @@ jobs:
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
-          name: PathFlux-win-x64-framework-dependent
+          name: PathFlux-win-x64-engine-${{ matrix.engine-version }}
           path: artifacts/win-x64

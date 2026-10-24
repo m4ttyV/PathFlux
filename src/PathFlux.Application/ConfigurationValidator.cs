@@ -135,7 +135,7 @@ public static class ConfigurationValidator
         else if (!profile.Enabled)
             Error("rule.profile.disabled", "Правило ссылается на отключённый профиль.");
         else if (rule.Network is NetworkTransport.Udp or NetworkTransport.Both)
-            issues.Add(new("udp.unverified", "UDP через прокси не подтверждён. Совпавшие UDP-потоки будут отклонены без скрытого Direct fallback.", rule.Id, true));
+            issues.Add(new("udp.unverified", "Прозрачная передача UDP через TUN не подтверждена. Совпавшие UDP-потоки будут отклонены без скрытого Direct fallback.", rule.Id, true));
     }
 
     private static bool IsNameValid(string? name) => !string.IsNullOrWhiteSpace(name) && name.Length <= 120 && !name.Any(char.IsControl);

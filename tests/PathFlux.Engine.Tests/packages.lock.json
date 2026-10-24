@@ -107,6 +107,18 @@
         "dependencies": {
           "PathFlux.Application": "[1.0.0, )"
         }
+      },
+      "pathflux.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "PathFlux.Application": "[1.0.0, )"
+        }
+      },
+      "pathflux.networklab": {
+        "type": "Project",
+        "dependencies": {
+          "PathFlux.Engine": "[1.0.0, )"
+        }
       }
     },
     "net10.0/win-x64": {}

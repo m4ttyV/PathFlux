@@ -101,17 +101,31 @@ public class ConfigTests
         Assert.Contains("ip_is_private", withLan);
         Assert.Null(JsonNode.Parse(ordinary)!["outbounds"]![1]!["tls"]);
     }
+    [Fact] public async Task VerifiedRelayEvidenceCannotEnableUnverifiedTransparentUdpRouting()
+    {
+        var verified = profile with
+        {
+            UdpVerification = new(UdpVerificationPolicy.Fingerprint(profile), DateTimeOffset.UtcNow,
+                UdpRelayStatus.Verified, "127.0.0.1", 4444, 3, 3, 1.0)
+        };
+        Assert.True(UdpVerificationPolicy.IsCurrent(verified, DateTimeOffset.UtcNow));
+        var config = Config(ProxyRule()) with { Profiles = [verified] };
+        var json = JsonNode.Parse(await new SingBoxConfigGenerator(new Secrets()).GenerateAsync(config, default))!;
+        Assert.Equal("tcp", (string?)json["outbounds"]![1]!["network"]);
+        Assert.Contains(json["route"]!["rules"]!.AsArray(), r =>
+            (string?)r?["network"] == "udp" && (string?)r["action"] == "reject");
+    }
     [EngineFact] public async Task OfficialEngineAcceptsGeneratedConfigurationWhenInstalled()
     {
         string? path = Environment.GetEnvironmentVariable("PATHFLUX_TEST_ENGINE");
         Assert.False(string.IsNullOrEmpty(path));
-        await EngineBinary.VerifyAsync(path!, EngineBinary.ExecutableSha256, default);
+        var version = await EngineBinary.VerifyAsync(path!, EngineTestBinary.ExpectedHash, default);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         foreach (var protocol in Enum.GetValues<ProxyProtocol>())
         {
             var config = Config(ProxyRule(), new RoutingRule { Action = RouteAction.Block, Selector = new(SelectorKind.ExecutablePath, @"C:\Apps\Test.exe"), Priority = 1 })
                 with { Profiles = [profile with { Protocol = protocol, CredentialsRef = "test" }], Settings = new() { EnginePath = path! } };
-            string json = await new SingBoxConfigGenerator(new Secrets()).GenerateAsync(config, timeout.Token);
+            string json = await new SingBoxConfigGenerator(new Secrets()).GenerateAsync(config, timeout.Token, engineVersion: version);
             Assert.True(await EngineBinary.CheckAsync(path!, json, timeout.Token), $"Official check rejected {protocol}");
         }
     }
@@ -131,5 +145,5 @@ public class ConfigTests
 public sealed class EngineFactAttribute : FactAttribute
 {
     public EngineFactAttribute()
-    { if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PATHFLUX_TEST_ENGINE"))) Skip = "Set PATHFLUX_TEST_ENGINE to the pinned official Windows binary to run sing-box check (no TUN)."; }
+    { if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PATHFLUX_TEST_ENGINE"))) Skip = "Set PATHFLUX_TEST_ENGINE to an official Windows binary >= 1.12.2 and PATHFLUX_TEST_ENGINE_SHA256 for engine validation/loopback tests (no TUN)."; }
 }

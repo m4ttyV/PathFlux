@@ -19,13 +19,18 @@ dotnet run --project PathFlux/PathFlux.csproj -c Release --no-build
 ```powershell
 $installed = ./scripts/get-engine.ps1
 $env:PATHFLUX_TEST_ENGINE = $installed.EnginePath
+$env:PATHFLUX_TEST_ENGINE_SHA256 = $installed.EngineSha256
 dotnet test tests/PathFlux.Engine.Tests/PathFlux.Engine.Tests.csproj -c Release
 ```
 
-Без PATHFLUX_TEST_ENGINE внешняя проверка помечается Skipped. Она проверяет hash и `check`, не создаёт TUN, не требует UAC и не изменяет маршруты. Остальные тесты используют локальный SOCKS/HTTP-сервер, временные файлы и DPAPI этого Windows-пользователя. Сетевой upstream для них не нужен. Проверка сертификатов TLS испытывается на недоверенном локальном сертификате (ожидаемый отказ).
+Без PATHFLUX_TEST_ENGINE внешние проверки помечаются Skipped. Они проверяют hash, `check` и реальную передачу UDP через отдельную лабораторную SOCKS-конфигурацию движка и локальные relay/echo-серверы. Позитивный случай использует авторизацию upstream; отрицательный подтверждает отсутствие Direct fallback при отказе UDP. Эта тестовая конфигурация заменяет TUN на loopback SOCKS и не проверяет process rules. Проверки не создают TUN, не требуют UAC и не изменяют маршруты. Остальные тесты используют локальный SOCKS/HTTP-сервер, временные файлы и DPAPI этого Windows-пользователя. Внешний upstream для них не нужен. Проверка сертификатов TLS испытывается на недоверенном локальном сертификате (ожидаемый отказ).
 
 ## Ручная проверка
 
 Запуск UI: `PathFlux.exe --smoke-test` создаёт реальное окно и завершает его автоматически, без изменения пользовательских настроек. Для функционального acceptance использовать шаги network-design.md: два процесса/два пути/разные маршруты, priority, отключение правила, proxy outage, авария агента, сеть после остановки. До его выполнения этапы 0/1 имеют статус Partial. Результаты автоматического прогона приведены в verification.md.
 
 Новые outbounds добавляются сначала в доменную модель/валидатор/capabilities, затем в генератор и диагностические тесты, и только после этого в форму. Не добавлять неработающие переключатели UDP/PID/kill switch. Схема JSON=1; неизвестная будущая схема не перезаписывается.
+
+Во второй итерации необязательное поле profiles[].udpVerification хранит только историю UDP echo; пароли, nonce и payload в него не входят. Старые schema1-файлы совместимы. Профиль с успешной UDP-диагностикой всё ещё получает reject для Proxy UDP. Инструкция echo-сервера: udp-diagnostics.md; отчёт: verification-udp.md.
+
+Изолированная проверка TCP: tools/PathFlux.NetworkLab входит в решение и публикуется в network-lab/. Скрипт scripts/run-tun-lab.ps1 по умолчанию выполняет только подготовку без TUN; живой прогон требует явного -Run и административных прав. Инструкция: tun-lab.md; результаты: verification-tun-lab.md. Общий WindowsProcessJob используется стендом и агентом; закрытие Job Object проверяется с настоящим процессом закреплённого движка без передачи конфигурации.

@@ -5,7 +5,7 @@ using PathFlux.ViewModels;
 
 namespace PathFlux.App.Tests;
 
-public sealed class WorkflowTests
+public sealed partial class WorkflowTests
 {
     [Fact]
     public async Task InvalidProfileIsRejectedWithoutPersistenceOrSecretLeak()
@@ -124,7 +124,8 @@ public sealed class WorkflowTests
     }
 
     private static MainWindowViewModel Create(IConfigurationStore store, MemorySecrets secrets, FakeEngine? engine = null,
-        IReadOnlyList<ProcessInfo>? processes = null) => new(store, secrets, new FakeProcesses(processes ?? []), new FakeDiagnostics(), engine ?? new());
+        IReadOnlyList<ProcessInfo>? processes = null, IProxyDiagnostics? diagnostics = null) => new(store, secrets,
+            new FakeProcesses(processes ?? []), diagnostics ?? new FakeDiagnostics(), engine ?? new());
 
     private sealed class MemoryStore(ProxyConfiguration configuration) : IConfigurationStore
     {

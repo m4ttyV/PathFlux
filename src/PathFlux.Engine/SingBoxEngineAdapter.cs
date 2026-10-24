@@ -8,7 +8,6 @@ namespace PathFlux.Engine;
 
 public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAdapter, IAsyncDisposable
 {
-    public const string EngineVersion = SingBoxConfigGenerator.EngineVersion;
     private readonly SemaphoreSlim gate = new(1, 1);
     private NamedPipeServerStream? pipe;
     private Process? agent;
@@ -27,8 +26,8 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             EngineBinary.EnsurePath(config.Settings.EnginePath);
             // Keep the executable locked against replacement until validation completes.
             await using var binaryLock = new FileStream(config.Settings.EnginePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            await EngineBinary.VerifyAsync(config.Settings.EnginePath, config.Settings.EngineSha256, timeout.Token);
-            string json = await new SingBoxConfigGenerator(secrets).GenerateAsync(config, timeout.Token);
+            var version = await EngineBinary.VerifyAsync(config.Settings.EnginePath, config.Settings.EngineSha256, timeout.Token);
+            string json = await new SingBoxConfigGenerator(secrets).GenerateAsync(config, timeout.Token, engineVersion: version);
             bool valid = await EngineBinary.CheckAsync(config.Settings.EnginePath, json, timeout.Token);
             return new(result.Issues.Concat(valid ? [] : new[] { new ValidationIssue("EngineCheck", "sing-box check отклонил конфигурацию. Секретные сообщения движка скрыты.") }).ToList());
         }
