@@ -1,0 +1,25 @@
+name: Windows build and tests
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore PathFlux.slnx --locked-mode
+      - run: dotnet build PathFlux.slnx -c Release --no-restore
+      - run: dotnet test PathFlux.slnx -c Release --no-build --logger trx --results-directory TestResults
+      - name: Native UI startup smoke test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath '.\PathFlux\bin\Release\net10.0\PathFlux.exe' -ArgumentList '--smoke-test' -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(20000)) { $p.Kill(); throw 'UI smoke test timed out' }
+          if ($p.ExitCode -ne 0) { throw 'UI smoke test failed' }
+      - run: .\scripts\publish.ps1
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PathFlux-win-x64-framework-dependent
+          path: artifacts/win-x64

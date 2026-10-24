@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "defaultAction": "direct",
+  "profiles": [
+    {
+      "id": "5ff9110e-e95f-49a5-a264-c819d2b0e58d",
+      "name": "Local OpenVPN SOCKS5 (example)",
+      "enabled": true,
+      "protocol": "socks5",
+      "host": "127.0.0.1",
+      "port": 1080,
+      "credentialsRef": null,
+      "tlsServerName": null
+    }
+  ],
+  "rules": [
+    {
+      "id": "76cd0997-a754-4a8f-86b4-8cb5c9daed97",
+      "name": "Discord TCP example",
+      "enabled": true,
+      "priority": 100,
+      "selector": { "kind": "processName", "value": "Discord.exe", "instance": null },
+      "includeChildren": false,
+      "network": "tcp",
+      "action": "proxy",
+      "profileId": "5ff9110e-e95f-49a5-a264-c819d2b0e58d",
+      "onProxyFailure": "block",
+      "lifetime": "persistent"
+    }
+  ],
+  "settings": {
+    "enginePath": "",
+    "engineSha256": "f1e6453b62482a95c9461d2c84d8e1a95567609f739adf6a1227a9b96c578747",
+    "theme": "Dark",
+    "language": "ru",
+    "processRefreshSeconds": 5,
+    "bypassLan": false,
+    "dnsMode": "System"
+  }
+}

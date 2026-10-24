@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "pathflux.application": {
+        "type": "Project",
+        "dependencies": {
+          "PathFlux.Domain": "[1.0.0, )"
+        }
+      },
+      "pathflux.domain": {
+        "type": "Project"
+      }
+    },
+    "net10.0/win-x64": {}
+  }
+}

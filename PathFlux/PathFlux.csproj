@@ -23,5 +23,12 @@
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.1" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\PathFlux.Application\PathFlux.Application.csproj" />
+    <ProjectReference Include="..\src\PathFlux.Infrastructure\PathFlux.Infrastructure.csproj" />
+    <ProjectReference Include="..\src\PathFlux.Engine\PathFlux.Engine.csproj" />
+    <EmbeddedResource Include="Resources\*.json" />
   </ItemGroup>
 </Project>

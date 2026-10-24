@@ -5,11 +5,32 @@
              RequestedThemeVariant="Default">
              <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
 
+    <Application.Resources>
+      <ResourceDictionary>
+        <ResourceDictionary.ThemeDictionaries>
+          <ResourceDictionary x:Key="Dark">
+            <SolidColorBrush x:Key="AppBackground">#10131A</SolidColorBrush>
+            <SolidColorBrush x:Key="AppSurface">#191D27</SolidColorBrush>
+            <SolidColorBrush x:Key="AppBorder">#303644</SolidColorBrush>
+          </ResourceDictionary>
+          <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="AppBackground">#F5F6FA</SolidColorBrush>
+            <SolidColorBrush x:Key="AppSurface">#FFFFFF</SolidColorBrush>
+            <SolidColorBrush x:Key="AppBorder">#DDE1EA</SolidColorBrush>
+          </ResourceDictionary>
+        </ResourceDictionary.ThemeDictionaries>
+      </ResourceDictionary>
+    </Application.Resources>
     <Application.DataTemplates>
         <local:ViewLocator/>
     </Application.DataTemplates>
   
     <Application.Styles>
-        <FluentTheme />
+        <FluentTheme>
+          <FluentTheme.Palettes>
+            <ColorPaletteResources x:Key="Light" Accent="#7161EF" />
+            <ColorPaletteResources x:Key="Dark" Accent="#8D80FF" />
+          </FluentTheme.Palettes>
+        </FluentTheme>
     </Application.Styles>
 </Application>

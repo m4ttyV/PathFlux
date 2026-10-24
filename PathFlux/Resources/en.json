@@ -1,0 +1,14 @@
+{
+  "app.name": "PathFlux",
+  "nav.overview": "Overview",
+  "nav.profiles": "Profiles",
+  "nav.rules": "Rules",
+  "nav.processes": "Processes",
+  "nav.diagnostics": "Diagnostics",
+  "nav.settings": "Settings",
+  "action.start": "Start",
+  "action.stop": "Stop",
+  "action.validate": "Validate",
+  "support.notVerified": "Not verified by tests",
+  "support.unsupported": "Unsupported"
+}

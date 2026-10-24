@@ -1,3 +1,16 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PathFlux.Agent/PathFlux.Agent.csproj" />
+    <Project Path="src/PathFlux.Application/PathFlux.Application.csproj" />
+    <Project Path="src/PathFlux.Domain/PathFlux.Domain.csproj" />
+    <Project Path="src/PathFlux.Engine/PathFlux.Engine.csproj" />
+    <Project Path="src/PathFlux.Infrastructure/PathFlux.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PathFlux.App.Tests/PathFlux.App.Tests.csproj" />
+    <Project Path="tests/PathFlux.Engine.Tests/PathFlux.Engine.Tests.csproj" />
+    <Project Path="tests/PathFlux.Infrastructure.Tests/PathFlux.Infrastructure.Tests.csproj" />
+    <Project Path="tests/PathFlux.Policy.Tests/PathFlux.Policy.Tests.csproj" />
+  </Folder>
   <Project Path="PathFlux/PathFlux.csproj" />
 </Solution>

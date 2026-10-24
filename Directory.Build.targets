@@ -1,0 +1,13 @@
+<Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'PathFlux'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)src\PathFlux.Agent\PathFlux.Agent.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="CopyPathFluxAgent" AfterTargets="Build" Condition="'$(MSBuildProjectName)' == 'PathFlux'">
+    <PropertyGroup>
+      <AgentBuildDirectory>$(MSBuildThisFileDirectory)src\PathFlux.Agent\bin\$(Configuration)\$(TargetFramework)\</AgentBuildDirectory>
+      <AgentBuildDirectory Condition="'$(RuntimeIdentifier)' != ''">$(AgentBuildDirectory)$(RuntimeIdentifier)\</AgentBuildDirectory>
+    </PropertyGroup>
+    <ItemGroup><AgentBuildFiles Include="$(AgentBuildDirectory)*.*" /></ItemGroup>
+    <Copy SourceFiles="@(AgentBuildFiles)" DestinationFolder="$(TargetDir)agent" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

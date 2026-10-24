@@ -1,20 +1,118 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:PathFlux.ViewModels"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
-        x:Class="PathFlux.Views.MainWindow"
-        x:DataType="vm:MainWindowViewModel"
-        Icon="/Assets/avalonia-logo.ico"
-        Title="PathFlux">
-
-    <Design.DataContext>
-        <!-- This only sets the DataContext for the previewer in an IDE,
-             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
-        <vm:MainWindowViewModel/>
-    </Design.DataContext>
-
-    <TextBlock Text="{Binding Greeting}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-
+        xmlns:domain="using:PathFlux.Domain"
+        x:Class="PathFlux.Views.MainWindow" x:DataType="vm:MainWindowViewModel"
+        Title="PathFlux — выборочная маршрутизация" Background="{DynamicResource AppBackground}" Width="1180" Height="830"
+        MinWidth="980" MinHeight="700" WindowStartupLocation="CenterScreen">
+  <Window.Styles>
+    <Style Selector="TextBlock.hint"><Setter Property="Opacity" Value="0.64"/><Setter Property="FontSize" Value="12"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style Selector="TextBlock.heading"><Setter Property="FontSize" Value="23"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
+    <Style Selector="TextBlock.label"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,6,0,0"/></Style>
+    <Style Selector="Border.card"><Setter Property="Background" Value="{DynamicResource AppSurface}"/><Setter Property="BorderBrush" Value="{DynamicResource AppBorder}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="12"/><Setter Property="Padding" Value="20"/></Style>
+    <Style Selector="Button"><Setter Property="Padding" Value="14,9"/><Setter Property="CornerRadius" Value="7"/></Style>
+    <Style Selector="Button.accent"><Setter Property="Background" Value="#7161EF"/><Setter Property="Foreground" Value="White"/></Style>
+    <Style Selector="TextBox"><Setter Property="CornerRadius" Value="6"/></Style>
+    <Style Selector="ComboBox"><Setter Property="HorizontalAlignment" Value="Stretch"/><Setter Property="MinHeight" Value="36"/></Style>
+    <Style Selector="TabItem"><Setter Property="Padding" Value="16,13"/></Style>
+    <Style Selector="ListBox"><Setter Property="Background" Value="Transparent"/></Style>
+    <Style Selector="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style>
+  </Window.Styles>
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="28,22,28,18" RowSpacing="15">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+      <StackPanel Orientation="Horizontal" Spacing="14">
+        <Border Background="#6558E8" CornerRadius="12" Width="46" Height="46"><TextBlock Text="↗" FontSize="29" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+        <StackPanel Spacing="1"><TextBlock Text="PathFlux" FontSize="25" FontWeight="Bold"/><TextBlock Text="Приложения выбирают свой маршрут" Classes="hint"/></StackPanel>
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+        <Button Content="Проверить" Command="{Binding ValidateCommand}" IsEnabled="{Binding CanUseTools}"/>
+        <Button Content="Запустить" Classes="accent" Command="{Binding StartCommand}" IsEnabled="{Binding CanStart}"/>
+        <Button Content="Остановить" Command="{Binding StopCommand}" IsEnabled="{Binding CanStop}"/>
+      </StackPanel>
+    </Grid>
+    <Border Grid.Row="1" Classes="card" Padding="16,12">
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="20">
+        <StackPanel><TextBlock Text="СОСТОЯНИЕ ДВИЖКА" Classes="hint"/><TextBlock Text="{Binding StatusText}" FontWeight="SemiBold" FontSize="17"/></StackPanel>
+        <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center"><TextBlock Text="{Binding StatusDetail}" TextWrapping="Wrap"/><TextBlock Text="{Binding EditingHint}" Classes="hint"/></StackPanel>
+      </Grid>
+    </Border>
+    <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTab}">
+      <TabItem Header="Обзор">
+        <ScrollViewer><StackPanel Spacing="18" Margin="0,18,0,0">
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="18">
+            <Border Classes="card"><StackPanel Spacing="8"><TextBlock Text="Настроено локально" Classes="hint"/><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="{Binding ProfileCount}" FontSize="36" FontWeight="SemiBold"/><TextBlock Text="прокси-профилей" VerticalAlignment="Center"/><TextBlock Text="/" FontSize="27" Opacity="0.4" VerticalAlignment="Center"/><TextBlock Text="{Binding RuleCount}" FontSize="36" FontWeight="SemiBold"/><TextBlock Text="правил" VerticalAlignment="Center"/></StackPanel><TextBlock Text="Остальные приложения → Direct. Сначала внутренние исключения, затем правила по возрастанию приоритета." Classes="hint"/></StackPanel></Border>
+            <Border Grid.Column="1" Classes="card"><StackPanel Spacing="8"><TextBlock Text="Реальные возможности" FontWeight="SemiBold" FontSize="17"/><TextBlock Text="{Binding CapabilityText}" TextWrapping="Wrap" FontSize="13"/><TextBlock Text="NotVerified — ещё не подтверждено; Unsupported — недоступно." Classes="hint"/></StackPanel></Border>
+          </Grid>
+          <Border Classes="card"><StackPanel Spacing="10"><TextBlock Text="Начало работы" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="1. Укажите официальный sing-box 1.12.12 и SHA-256 в настройках.&#10;2. Создайте SOCKS5 / HTTP(S) CONNECT профиль.&#10;3. Добавьте правило по имени или полному пути EXE.&#10;4. Проверьте конфигурацию и запустите. Агент запросит UAC.&#10;5. Подтвердите маршрут на тестовом приложении по инструкции Windows acceptance." TextWrapping="Wrap"/><TextBlock Text="Первый этап: UDP через прокси блокируется, пока не подтверждён сквозной тест. Точный PID, IncludeChildren и системный kill switch недоступны. System DNS не гарантирует защиту от DNS-утечек." Classes="hint"/></StackPanel></Border>
+          <Border Classes="card"><StackPanel Spacing="10"><TextBlock Text="Проверка конфигурации" FontSize="18" FontWeight="SemiBold"/><SelectableTextBlock Text="{Binding ValidationText}" TextWrapping="Wrap"/></StackPanel></Border>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+      <TabItem Header="Профили">
+        <Grid ColumnDefinitions="300,*" ColumnSpacing="20" Margin="0,18,0,0">
+          <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
+            <TextBlock Text="Прокси-профили" Classes="heading"/>
+            <ListBox Grid.Row="1" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}">
+              <ListBox.ItemTemplate><DataTemplate x:DataType="domain:ProxyProfile"><StackPanel Spacing="4" Margin="4,7"><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/><TextBlock Text="{Binding Protocol}" Classes="hint"/><StackPanel Orientation="Horizontal" Spacing="3"><TextBlock Text="{Binding Host}" Classes="hint"/><TextBlock Text=":" Classes="hint"/><TextBlock Text="{Binding Port}" Classes="hint"/></StackPanel><CheckBox Content="Включён" IsChecked="{Binding Enabled, Mode=OneWay}" IsHitTestVisible="False" Focusable="False"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+            </ListBox>
+            <Button Grid.Row="2" Content="＋ Новый профиль" Command="{Binding NewProfileCommand}" IsEnabled="{Binding CanEdit}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+          </Grid>
+          <ScrollViewer Grid.Column="1"><Border Classes="card"><StackPanel Spacing="8" IsEnabled="{Binding CanEdit}">
+            <TextBlock Text="Параметры профиля" FontSize="20" FontWeight="SemiBold"/>
+            <TextBlock Text="Название" Classes="label"/><TextBox Text="{Binding ProfileName}" MaxLength="120"/>
+            <Grid ColumnDefinitions="*,140" ColumnSpacing="12"><StackPanel Spacing="8"><TextBlock Text="Протокол" Classes="label"/><ComboBox ItemsSource="{Binding Protocols}" SelectedItem="{Binding ProfileProtocol}"/></StackPanel><CheckBox Grid.Column="1" Content="Включён" IsChecked="{Binding ProfileEnabled}" VerticalAlignment="Bottom"/></Grid>
+            <Grid ColumnDefinitions="*,120" ColumnSpacing="12"><StackPanel Spacing="8"><TextBlock Text="Хост / IP" Classes="label"/><TextBox Text="{Binding ProfileHost}" Watermark="proxy.example.org"/></StackPanel><StackPanel Grid.Column="1" Spacing="8"><TextBlock Text="Порт" Classes="label"/><TextBox Text="{Binding ProfilePort}"/></StackPanel></Grid>
+            <StackPanel IsVisible="{Binding IsHttps}" Spacing="8"><TextBlock Text="TLS server name / SNI" Classes="label"/><TextBox Text="{Binding ProfileTlsServerName}" Watermark="Необязательно; по умолчанию хост"/><TextBlock Text="Проверка TLS-сертификата обязательна." Classes="hint"/></StackPanel>
+            <TextBlock Text="Авторизация" Classes="label"/><TextBlock Text="{Binding CredentialStatus}" Classes="hint"/>
+            <CheckBox Content="Записать / заменить логин и пароль" IsChecked="{Binding ReplaceCredentials}"/>
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12" IsEnabled="{Binding ReplaceCredentials}"><TextBox Text="{Binding ProfileUsername}" Watermark="Логин"/><TextBox Grid.Column="1" Text="{Binding ProfilePassword}" PasswordChar="●" Watermark="Пароль"/></Grid>
+            <CheckBox Content="Удалить сохранённую авторизацию" IsChecked="{Binding RemoveCredentials}"/>
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0"><Button Content="Сохранить" Classes="accent" Command="{Binding SaveProfileCommand}"/><Button Content="Дублировать" Command="{Binding DuplicateProfileCommand}"/><Button Content="Удалить" Command="{Binding DeleteProfileCommand}"/></StackPanel>
+            <TextBlock Text="При копировании секреты не переносятся. Профиль с назначенными правилами удалить нельзя." Classes="hint"/>
+          </StackPanel></Border></ScrollViewer>
+        </Grid>
+      </TabItem>
+      <TabItem Header="Правила">
+        <Grid ColumnDefinitions="330,*" ColumnSpacing="20" Margin="0,18,0,0">
+          <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12"><TextBlock Text="Маршруты приложений" Classes="heading"/>
+            <ListBox Grid.Row="1" ItemsSource="{Binding Rules}" SelectedItem="{Binding SelectedRule}"><ListBox.ItemTemplate><DataTemplate x:DataType="domain:RoutingRule"><StackPanel Spacing="4" Margin="4,7"><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/><TextBlock Text="{Binding Selector.Value}" Classes="hint" TextTrimming="CharacterEllipsis"/><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Priority}"/><TextBlock Text="{Binding Action}"/><TextBlock Text="{Binding Network}" Classes="hint"/></StackPanel><CheckBox Content="Включено" IsChecked="{Binding Enabled, Mode=OneWay}" IsHitTestVisible="False" Focusable="False"/></StackPanel></DataTemplate></ListBox.ItemTemplate></ListBox>
+            <Button Grid.Row="2" Content="＋ Новое правило" Command="{Binding NewRuleCommand}" IsEnabled="{Binding CanEdit}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+          </Grid>
+          <ScrollViewer Grid.Column="1"><Border Classes="card"><StackPanel Spacing="8" IsEnabled="{Binding CanEdit}">
+            <TextBlock Text="Постоянное правило" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Имя / путь применяется ко всем совпавшим экземплярам и переживает перезапуск приложения." Classes="hint"/>
+            <TextBlock Text="Название" Classes="label"/><TextBox Text="{Binding RuleName}" MaxLength="120"/>
+            <Grid ColumnDefinitions="*,140" ColumnSpacing="12"><StackPanel Spacing="8"><TextBlock Text="Приоритет (меньше → раньше)" Classes="label"/><TextBox Text="{Binding RulePriority}"/></StackPanel><CheckBox Grid.Column="1" Content="Включено" IsChecked="{Binding RuleEnabled}" VerticalAlignment="Bottom"/></Grid>
+            <TextBlock Text="Тип селектора" Classes="label"/><ComboBox ItemsSource="{Binding Selectors}" SelectedItem="{Binding RuleSelector}"/>
+            <TextBox Text="{Binding RuleValue}" Watermark="Discord.exe или C:\Apps\Discord.exe"/>
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12"><StackPanel Spacing="8"><TextBlock Text="Сеть" Classes="label"/><ComboBox ItemsSource="{Binding Networks}" SelectedItem="{Binding RuleNetwork}"/></StackPanel><StackPanel Grid.Column="1" Spacing="8"><TextBlock Text="Действие" Classes="label"/><ComboBox ItemsSource="{Binding Actions}" SelectedItem="{Binding RuleAction}"/></StackPanel></Grid>
+            <StackPanel Spacing="8" IsVisible="{Binding IsProxyAction}"><TextBlock Text="Прокси-профиль" Classes="label"/><ComboBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding RuleProfile}"/><TextBlock Text="При сбое: Block. Direct fallback в этой версии недоступен." Classes="hint"/></StackPanel>
+            <CheckBox Content="Только выбранный PID — недоступно" IsEnabled="False"/><CheckBox Content="IncludeChildren — недоступно" IsEnabled="False"/>
+            <TextBlock Text="Точная атрибуция PID и отслеживание потомков требуют отдельного сетевого backend. UDP через Proxy сейчас отклоняется без обхода в Direct." Classes="hint"/>
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0"><Button Content="Сохранить" Classes="accent" Command="{Binding SaveRuleCommand}"/><Button Content="Удалить" Command="{Binding DeleteRuleCommand}"/></StackPanel>
+          </StackPanel></Border></ScrollViewer>
+        </Grid>
+      </TabItem>
+      <TabItem Header="Процессы">
+        <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="12" Margin="0,18,0,0">
+          <Grid ColumnDefinitions="*,150,Auto" ColumnSpacing="10"><TextBox Text="{Binding ProcessSearch}" Watermark="Поиск по имени, PID или пути…"/><ComboBox Grid.Column="1" ItemsSource="{Binding ProcessSortOptions}" SelectedItem="{Binding ProcessSort}"/><Button Grid.Column="2" Content="Обновить" Command="{Binding RefreshProcessesCommand}" IsEnabled="{Binding CanUseTools}"/></Grid>
+          <TextBlock Grid.Row="1" Text="{Binding ProcessSummary}" Classes="hint"/>
+          <Grid Grid.Row="2" ColumnDefinitions="210,80,*,155" Margin="13,0,20,0"><TextBlock Text="Имя процесса" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="PID" FontWeight="SemiBold"/><TextBlock Grid.Column="2" Text="Путь EXE" FontWeight="SemiBold"/><TextBlock Grid.Column="3" Text="Запущен (UTC)" FontWeight="SemiBold"/></Grid>
+          <ListBox Grid.Row="3" ItemsSource="{Binding Processes}" SelectedItems="{Binding SelectedProcesses}" SelectionMode="Multiple,Toggle"><ListBox.ItemTemplate><DataTemplate x:DataType="domain:ProcessInfo"><Grid ColumnDefinitions="210,80,*,155" MinHeight="40" VerticalAlignment="Center"><TextBlock Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Pid}" VerticalAlignment="Center"/><TextBlock Grid.Column="2" Text="{Binding PathDisplay}" VerticalAlignment="Center" Classes="hint" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding PathDisplay}"/><TextBlock Grid.Column="3" Text="{Binding StartTimeUtc, StringFormat='{}{0:dd.MM HH:mm:ss}'}" VerticalAlignment="Center" Classes="hint"/></Grid></DataTemplate></ListBox.ItemTemplate></ListBox>
+          <StackPanel Grid.Row="4" Spacing="8"><StackPanel Orientation="Horizontal" Spacing="8" IsEnabled="{Binding CanEdit}"><Button Content="Создать по имени" Command="{Binding CreateNameRulesCommand}"/><Button Content="Создать по пути EXE" Command="{Binding CreatePathRulesCommand}"/><Button Content="Только этот PID" IsEnabled="False" ToolTip.Tip="Точная маршрутизация по PID пока не реализована."/></StackPanel><TextBlock Text="Можно выбрать несколько процессов. Новые правила используют первый включённый профиль и TCP. Путь защищённого процесса может быть недоступен. Родительский PID, соединения и объём трафика не измеряются." Classes="hint"/></StackPanel>
+        </Grid>
+      </TabItem>
+      <TabItem Header="Диагностика">
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="20" Margin="0,18,0,0">
+          <ScrollViewer><StackPanel Spacing="16"><Border Classes="card"><StackPanel Spacing="10"><TextBlock Text="Проверить прокси" Classes="heading"/><TextBlock Text="Профиль" Classes="label"/><ComboBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding DiagnosticProfile}"/><Grid ColumnDefinitions="*,100" ColumnSpacing="10"><TextBox Text="{Binding TargetHost}" Watermark="Целевой хост"/><TextBox Grid.Column="1" Text="{Binding TargetPort}" Watermark="Порт"/></Grid><StackPanel Orientation="Horizontal" Spacing="8" IsEnabled="{Binding CanUseTools}"><Button Content="TCP CONNECT" Command="{Binding TestTcpCommand}" Classes="accent"/><Button Content="UDP ASSOCIATE" Command="{Binding TestUdpCommand}"/></StackPanel><TextBlock Text="Тест создаёт соединение с указанной целью через выбранный прокси. Передача UDP-датаграмм и маршрут конкретного процесса требуют отдельных проверок." Classes="hint"/></StackPanel></Border><Border Classes="card"><SelectableTextBlock Text="{Binding DiagnosticText}" TextWrapping="Wrap"/></Border></StackPanel></ScrollViewer>
+          <Border Grid.Column="1" Classes="card"><Grid RowDefinitions="Auto,Auto,*" RowSpacing="10"><TextBlock Text="Журнал сессии" FontSize="20" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Только безопасные события текущего запуска. Секреты и ответы сервера не записываются." Classes="hint"/><ListBox Grid.Row="2" ItemsSource="{Binding LogEntries}"><ListBox.ItemTemplate><DataTemplate x:DataType="x:String"><TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12" Margin="0,4"/></DataTemplate></ListBox.ItemTemplate></ListBox></Grid></Border>
+        </Grid>
+      </TabItem>
+      <TabItem Header="Настройки">
+        <ScrollViewer><Grid ColumnDefinitions="3*,2*" ColumnSpacing="20" Margin="0,18,0,0">
+          <Border Classes="card"><StackPanel Spacing="10" IsEnabled="{Binding CanEdit}"><TextBlock Text="Движок и приложение" Classes="heading"/><TextBlock Text="Путь к sing-box 1.12.12 / Windows x64" Classes="label"/><TextBox Text="{Binding EnginePath}" Watermark="C:\Tools\sing-box\sing-box.exe"/><TextBlock Text="SHA-256 исполняемого файла" Classes="label"/><TextBox Text="{Binding EngineSha256}" Watermark="f1e6453b62482a95c9461d2c84d8e1a95567609f739adf6a1227a9b96c578747"/><TextBlock Text="Используйте проверенный официальный выпуск. Бинарник не скачивается автоматически. Версия и SHA-256 проверяются перед запуском." Classes="hint"/><Grid ColumnDefinitions="*,*" ColumnSpacing="12"><StackPanel Spacing="8"><TextBlock Text="Тема" Classes="label"/><ComboBox ItemsSource="{Binding Themes}" SelectedItem="{Binding SelectedTheme}"/></StackPanel><StackPanel Grid.Column="1" Spacing="8"><TextBlock Text="Обновление процессов, сек." Classes="label"/><TextBox Text="{Binding RefreshSeconds}"/></StackPanel></Grid><CheckBox Content="Обходить локальные сети (LAN)" IsChecked="{Binding BypassLan}"/><TextBlock Text="LAN bypass имеет приоритет перед пользовательскими правилами и разрешает локальный трафик напрямую." Classes="hint"/><Button Content="Сохранить настройки" Command="{Binding SaveSettingsCommand}" Classes="accent" Margin="0,8,0,0"/></StackPanel></Border>
+          <StackPanel Grid.Column="1" Spacing="18"><Border Classes="card"><StackPanel Spacing="10"><TextBlock Text="Локальные данные" FontWeight="SemiBold" FontSize="18"/><TextBlock Text="%LOCALAPPDATA%\PathFlux&#10;config.json — профили, правила, настройки&#10;secrets\ — Windows DPAPI CurrentUser&#10;&#10;Обычный JSON содержит только ссылки на секреты. Запуск сети выполняет отдельный агент с подтверждением UAC." TextWrapping="Wrap"/></StackPanel></Border><Border Classes="card"><StackPanel Spacing="10"><TextBlock Text="Статус первой итерации" FontWeight="SemiBold" FontSize="18"/><TextBlock Text="Интерфейс: русский. В Resources подготовлены словари ru/en для дальнейшей локализации.&#10;&#10;DNS: System (защищённый DNS ещё не подтверждён). Автозапуск, подписки и расширенные протоколы — следующие этапы." Classes="hint"/></StackPanel></Border></StackPanel>
+        </Grid></ScrollViewer>
+      </TabItem>
+    </TabControl>
+    <Border Grid.Row="3" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0"><Grid ColumnDefinitions="Auto,*" ColumnSpacing="12"><ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="50" Height="4" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="{Binding Notice}" TextWrapping="Wrap" FontSize="12"/></Grid></Border>
+  </Grid>
 </Window>
