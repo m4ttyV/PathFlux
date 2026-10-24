@@ -8,7 +8,7 @@ namespace PathFlux.Infrastructure;
 /// <summary>Versioned local configuration, with atomic replacement and a last-valid backup.</summary>
 public sealed class JsonConfigurationStore(string path) : IConfigurationStore, ISecretReferenceRetention
 {
-    private const int CurrentSchema = 1;
+    private const int CurrentSchema = 2;
     private readonly string _path = Path.GetFullPath(path);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private static readonly JsonSerializerOptions Options = new()
@@ -129,11 +129,14 @@ public sealed class JsonConfigurationStore(string path) : IConfigurationStore, I
                 throw new InvalidDataException("Configuration has no valid schema version. Original data is preserved.");
             if (version > CurrentSchema)
                 throw new NotSupportedException("Configuration was created by a newer version. Original data is preserved.");
-            if (version != CurrentSchema)
+            if (version is not (1 or CurrentSchema))
                 throw new InvalidDataException("Unsupported legacy configuration schema. Original data is preserved.");
             var configuration = document.Deserialize<ProxyConfiguration>(Options)
                 ?? throw new InvalidDataException("Configuration is empty. Original data is preserved.");
             ValidateStructure(configuration);
+            if (version == 1) configuration = configuration with { SchemaVersion = CurrentSchema,
+                Settings = configuration.Settings with { ExperimentalSocksUdp = false },
+                Profiles = configuration.Profiles.Select(p => p with { UdpRelayMode = UdpRelayMode.Standard, UdpPublishedPortFirst = null, UdpPublishedPortLast = null }).ToList() };
             return configuration;
         }
         catch (JsonException)

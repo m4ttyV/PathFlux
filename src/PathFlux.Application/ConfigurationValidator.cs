@@ -11,8 +11,8 @@ public static class ConfigurationValidator
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var issues = ValidatePolicy(configuration.Rules, configuration.Profiles).Issues.ToList();
-        if (configuration.SchemaVersion != 1)
-            issues.Add(new("schema.unsupported", "Поддерживается только схема конфигурации 1."));
+        if (configuration.SchemaVersion is not (1 or 2))
+            issues.Add(new("schema.unsupported", "Поддерживаются схемы конфигурации 1 и 2."));
         if (configuration.DefaultAction != RouteAction.Direct)
             issues.Add(new("default.unsupported", "В этой версии маршрут по умолчанию должен быть Direct."));
         if (configuration.Settings is null)
@@ -23,6 +23,18 @@ public static class ConfigurationValidator
                 issues.Add(new("settings.refresh", "Интервал обновления процессов должен быть от 1 до 3600 секунд."));
             if (configuration.Settings.DnsMode != "System")
                 issues.Add(new("dns.unsupported", "В этой версии доступен только режим System DNS; защищённый DNS-маршрут не подтверждён."));
+            if (configuration.Settings.ExperimentalSocksUdp)
+            {
+                if (configuration.SchemaVersion != 2) issues.Add(new("udp.schema", "Экспериментальный UDP требует схемы 2."));
+                foreach (var rule in configuration.Rules?.Where(r => r is not null && ExperimentalUdpPolicy.UsesUdp(r)) ?? [])
+                {
+                    var profile = configuration.Profiles?.FirstOrDefault(p => p?.Id == rule.ProfileId);
+                    if (profile is not null && ExperimentalUdpPolicy.Incompatibility(profile) is { } reason)
+                        issues.Add(new("udp.incompatible", reason, rule.Id));
+                }
+                issues.RemoveAll(i => i.Code == "udp.unverified");
+                issues.Add(new("udp.experimental", "Экспериментальный UDP включён вручную. Стабильность Discord и отсутствие DNS-утечек не подтверждены.", IsWarning: true));
+            }
         }
         return new(issues);
     }
@@ -80,6 +92,16 @@ public static class ConfigurationValidator
             issues.Add(new("profile.host", "Укажите DNS-имя или IP-адрес прокси без схемы, порта, пути и учётных данных."));
         if (profile.Port is < 1 or > 65535)
             issues.Add(new("profile.port", "Порт прокси должен быть от 1 до 65535."));
+        if (!Enum.IsDefined(profile.UdpRelayMode)) issues.Add(new("udp.mode", "Неизвестный режим UDP relay."));
+        if (profile.UdpRelayMode == UdpRelayMode.DockerNat)
+        {
+            if (ExperimentalUdpPolicy.Incompatibility(profile) is { } reason) issues.Add(new("udp.docker.host", reason));
+            if (profile.UdpPublishedPortFirst is not >= 1 or > 65535 || profile.UdpPublishedPortLast is not >= 1 or > 65535 ||
+                profile.UdpPublishedPortFirst > profile.UdpPublishedPortLast)
+                issues.Add(new("udp.docker.range", "Для Docker NAT укажите разрешённый диапазон UDP-портов от 1 до 65535, начало не больше конца."));
+        }
+        else if (profile.UdpPublishedPortFirst is not null || profile.UdpPublishedPortLast is not null)
+            issues.Add(new("udp.standard.range", "Диапазон опубликованных портов применяется только к Docker NAT."));
         if (profile.CredentialsRef is not null &&
             (string.IsNullOrWhiteSpace(profile.CredentialsRef) || profile.CredentialsRef.Any(char.IsControl)))
             issues.Add(new("profile.credentials", "Ссылка на защищённое хранилище учётных данных некорректна."));

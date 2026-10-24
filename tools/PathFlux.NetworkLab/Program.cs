@@ -4,6 +4,18 @@ using PathFlux.Engine;
 using PathFlux.Application;
 using PathFlux.Domain;
 
+if (args.Length == 3 && args[0] == "recover-owned" && args[2] == "--preserve-network-change" && Path.IsPathFullyQualified(args[1]))
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    try
+    {
+        var result = await RecoveryJournal.VerifyOwnedCleanupAndArchiveAsync(args[1], deadline.Token);
+        Console.WriteLine((result.GlobalBaselineMatched ? "GlobalBaselineVerified: " : "OwnedCleanupVerified_GlobalBaselineUnconfirmed: ") + result.Path);
+        return 0;
+    }
+    catch (Exception ex) { Console.Error.WriteLine(ex is InvalidOperationException ? ex.Message : ex.GetType().Name); return 1; }
+}
+
 if (args.Length == 6 && args[0] == "agent-tcp" && args[5] == "--allow-system-tun" && Path.IsPathFullyQualified(args[1]) && Path.IsPathFullyQualified(args[3]) && Path.IsPathFullyQualified(args[4]) && !Directory.Exists(args[3]))
 {
     using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
@@ -21,7 +33,8 @@ if (args.Length == 3 && args[0] == "recover-journal" && args[2] == "--archive-co
     catch (Exception ex) { Console.Error.WriteLine(ex is InvalidOperationException ? ex.Message : ex.GetType().Name); return 1; }
 }
 
-if (args.Length is 6 or 8 && args[0] == "elevate" && args[1] is "run-isolated" or "docker-tcp" or "udp-tun" or "docker-udp" && args[^1] == "--allow-tun")
+if ((args.Length is 6 or 8 && args[0] == "elevate" && args[1] is "run-isolated" or "docker-tcp" or "udp-tun" or "docker-udp" or "session-udp" && args[^1] == "--allow-tun") ||
+    (args.Length == 7 && args[0] == "elevate" && args[1] == "agent-faults" && args[^1] == "--allow-system-tun"))
 {
     var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
     { UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
@@ -29,6 +42,16 @@ if (args.Length is 6 or 8 && args[0] == "elevate" && args[1] is "run-isolated" o
     using var child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("LabLaunchFailed");
     using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(11));
     await child.WaitForExitAsync(deadline.Token); return child.ExitCode;
+}
+if (args.Length == 6 && args[0] == "agent-faults" && args[5] == "--allow-system-tun" && Path.IsPathFullyQualified(args[1]) && Path.IsPathFullyQualified(args[3]) && Path.IsPathFullyQualified(args[4]) && !Directory.Exists(args[3]))
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+    return await AgentFaultAudit.RunAsync(args[1], args[2], args[3], args[4], deadline.Token);
+}
+if (args.Length == 5 && args[0] == "session-udp" && args[4] == "--allow-tun" && Path.IsPathFullyQualified(args[1]) && Path.IsPathFullyQualified(args[3]) && !Directory.Exists(args[3]))
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+    return await SessionUdpAudit.RunAsync(args[1], args[2], args[3], deadline.Token);
 }
 
 if (args.Length == 3 && args[0] == "probe-dns")

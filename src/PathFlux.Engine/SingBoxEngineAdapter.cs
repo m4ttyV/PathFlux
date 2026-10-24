@@ -11,14 +11,19 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
     private readonly string agentExecutablePath = Path.Combine(AppContext.BaseDirectory, "agent", "PathFlux.Agent.exe");
     internal SingBoxEngineAdapter(ISecretStore secrets, string agentPath) : this(secrets)
         => agentExecutablePath = Path.GetFullPath(agentPath);
+    internal SingBoxEngineAdapter(ISecretStore secrets, string agentPath, string journalPath) : this(secrets, agentPath)
+        => recoveryJournalPath = Path.GetFullPath(journalPath);
+    private readonly string recoveryJournalPath = RecoveryJournal.DefaultPath;
     private readonly SemaphoreSlim gate = new(1, 1);
     private NamedPipeServerStream? pipe;
     private Process? agent;
+    internal int? AgentPidForLaboratory => agent?.Id;
     private string? lastStartFailure;
+    private string? recoveryNotice;
     private EngineStatus status = new(EngineState.Stopped, "Движок остановлен.");
     public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => Task.FromResult(new EngineCapabilities(
         SupportStatus.Partial, SupportStatus.Partial, SupportStatus.Unsupported, SupportStatus.Unsupported,
-        SupportStatus.Partial, SupportStatus.Unsupported, SupportStatus.Unsupported));
+        SupportStatus.Partial, SupportStatus.Experimental, SupportStatus.Unsupported));
 
     public async Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct)
     {
@@ -31,7 +36,7 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             // Keep the executable locked against replacement until validation completes.
             await using var binaryLock = new FileStream(config.Settings.EnginePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var version = await EngineBinary.VerifyAsync(config.Settings.EnginePath, config.Settings.EngineSha256, timeout.Token);
-            string json = await new SingBoxConfigGenerator(secrets).GenerateAsync(config, timeout.Token, engineVersion: version);
+            string json = await new SingBoxConfigGenerator(secrets).GenerateValidationAsync(config, timeout.Token, version);
             bool valid = await EngineBinary.CheckAsync(config.Settings.EnginePath, json, timeout.Token);
             return new(result.Issues.Concat(valid ? [] : new[] { new ValidationIssue("EngineCheck", "sing-box check отклонил конфигурацию. Секретные сообщения движка скрыты.") }).ToList());
         }
@@ -51,8 +56,8 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             }
             status = new(EngineState.Starting, "Проверка конфигурации…");
             lastStartFailure = null;
-            if (RecoveryJournal.HasPendingBaseline(RecoveryJournal.DefaultPath))
-                throw new InvalidOperationException("Остался неподтверждённый снимок сети. Проверьте network-recovery.json командой recover-journal из NetworkLab перед новым запуском.");
+            if (RecoveryJournal.HasPendingBaseline(recoveryJournalPath))
+                await CompletePendingRecoveryAsync(ct);
             var validation = await ValidateAsync(config, ct);
             if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
             string agentPath = agentExecutablePath;
@@ -88,6 +93,7 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
         await gate.WaitAsync(ct);
         try
         {
+            recoveryNotice = null;
             if (pipe?.IsConnected == true)
             {
                 status = new(EngineState.Stopping, "Остановка движка…");
@@ -96,12 +102,15 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
                 var reply = await AgentProtocol.ReadAsync<AgentReply>(pipe, timeout.Token); status = reply.Status;
                 if (!reply.Success) throw new InvalidOperationException("Агент сообщил об ошибке остановки. Проверьте восстановление сети.");
                 if (agent is not null) await agent.WaitForExitAsync(timeout.Token);
+                await CompletePendingRecoveryAsync(timeout.Token);
+                if (recoveryNotice is not null) status = status with { Message = recoveryNotice };
             }
             else
             {
+                await CompletePendingRecoveryAsync(ct);
                 if (status.State == EngineState.Failed && !await WaitForStoppedAsync(ct))
                     throw new InvalidOperationException("Остановка агента или очистка TUN не подтверждена. Выполните recovery-проверку сети.");
-                status = new(EngineState.Stopped, "Движок остановлен. При сбое проверьте состояние сети по recovery-инструкции.");
+                status = new(EngineState.Stopped, recoveryNotice ?? "Движок остановлен. При сбое проверьте состояние сети по recovery-инструкции.");
             }
         }
         catch (Exception ex)
@@ -110,7 +119,7 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             pipe?.Dispose(); pipe = null;
             if (await WaitForStoppedAsync(CancellationToken.None))
             {
-                status = new(EngineState.Stopped, "Движок остановлен. Завершение агента и очистка IP-интерфейса подтверждены.");
+                status = new(EngineState.Stopped, recoveryNotice ?? "Движок остановлен. Завершение агента и очистка IP-интерфейса подтверждены.");
                 return;
             }
             string reason = ex is OperationCanceledException ? "Истекло время ожидания." : SafeMessage(ex);
@@ -136,21 +145,38 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
         finally { gate.Release(); }
     }
     private void Cleanup() { pipe?.Dispose(); pipe = null; agent?.Dispose(); agent = null; }
-    private static bool CanConfirmStopped()
+    private bool CanConfirmStopped()
     {
         if (!OperatingSystem.IsWindows()) return false;
         try
         {
             if (TunInterfaceProbe.RequiresCleanup(SingBoxConfigGenerator.InterfaceName)) return false;
-            if (RecoveryJournal.HasPendingBaseline(RecoveryJournal.DefaultPath)) return false;
+            if (RecoveryJournal.HasPendingBaseline(recoveryJournalPath)) return false;
             // Query existence without requesting write access across the integrity-level boundary.
             try { using var runningAgent = EventWaitHandleAcl.OpenExisting(@"Global\PathFlux.NetworkAgent.Lifetime.v1", EventWaitHandleRights.Synchronize); return false; }
             catch (WaitHandleCannotBeOpenedException) { return true; }
         }
         catch { return false; }
     }
-    private static async Task<bool> WaitForStoppedAsync(CancellationToken ct)
+    private async Task CompletePendingRecoveryAsync(CancellationToken ct)
     {
+        if (!RecoveryJournal.HasPendingBaseline(recoveryJournalPath)) return;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            var archive = await RecoveryJournal.VerifyOwnedCleanupAndArchiveAsync(recoveryJournalPath, timeout.Token);
+            recoveryNotice = archive.GlobalBaselineMatched
+                ? "Движок остановлен. Восстановление сети подтверждено; журнал архивирован."
+                : "Движок остановлен, ресурсы PathFlux удалены. Сеть изменилась (например, VPN или DHCP); исходный журнал сохранён как .unconfirmed-network-change. Полное совпадение сети не подтверждено.";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { throw new InvalidOperationException("Очистка собственных ресурсов PathFlux не подтверждена или журнал недоступен. Исходный recovery-журнал сохранён."); }
+    }
+    private async Task<bool> WaitForStoppedAsync(CancellationToken ct)
+    {
+        try { await CompletePendingRecoveryAsync(ct); }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) { return false; }
         var timer = Stopwatch.StartNew();
         while (true)
         {
@@ -159,7 +185,15 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             await Task.Delay(200, ct);
         }
     }
-    public async ValueTask DisposeAsync() { try { await StopAsync(CancellationToken.None); } finally { gate.Dispose(); } }
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            // Validation-only adapters own no session and must not finalize another session's journal on disposal.
+            if (pipe is not null || agent is not null || status.State != EngineState.Stopped) await StopAsync(CancellationToken.None);
+        }
+        finally { gate.Dispose(); }
+    }
     private static string SafeMessage(Exception ex) => ex switch
     {
         InvalidOperationException => ex.Message,

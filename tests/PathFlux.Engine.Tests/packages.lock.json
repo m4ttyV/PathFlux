@@ -123,6 +123,7 @@
       "pathflux.networklab": {
         "type": "Project",
         "dependencies": {
+          "PathFlux.Agent": "[1.0.0, )",
           "PathFlux.Engine": "[1.0.0, )"
         }
       }

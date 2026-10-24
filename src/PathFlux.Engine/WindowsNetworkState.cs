@@ -49,4 +49,25 @@ public sealed record WindowsNetworkState(WindowsNetworkRoute[] Routes, WindowsNe
         if (after.Adapters.Any(a => a.Name.Equals(ownInterface, StringComparison.OrdinalIgnoreCase) && !a.Detached)) issues.Add("OwnInterfaceRemains");
         return issues.Distinct().ToArray();
     }
+    // A VPN/DHCP transition can change the global baseline independently of PathFlux.
+    // This narrower check proves only removal of our reserved TUN resources, never global recovery.
+    public string[] OwnedCleanupIssues(string ownInterface)
+    {
+        var issues = new List<string>();
+        if (Adapters.Any(a => a.Name.Equals(ownInterface, StringComparison.OrdinalIgnoreCase) && !a.Detached)) issues.Add("OwnInterfaceRemains");
+        static bool Reserved(string value)
+        {
+            string host = value.Split('/')[0].Split('%')[0];
+            if (!System.Net.IPAddress.TryParse(host, out var ip)) return false;
+            var bytes = ip.GetAddressBytes();
+            return bytes.Length == 4 ? bytes[0] == 172 && bytes[1] == 30 && bytes[2] == 254 && bytes[3] <= 3
+                : ip.ToString().StartsWith("fdfe:7061:7468:", StringComparison.OrdinalIgnoreCase);
+        }
+        var ownIndexes = Adapters.Where(a => a.Name.Equals(ownInterface, StringComparison.OrdinalIgnoreCase) && a.InterfaceIndex > 0)
+            .Select(a => a.InterfaceIndex).ToHashSet();
+        if (Routes.Any(r => ownIndexes.Contains(r.InterfaceIndex) || Reserved(r.NextHop) || Reserved(r.DestinationPrefix))) issues.Add("OwnRoutesRemain");
+        if (Adapters.Any(a => a.Addresses.Any(Reserved))) issues.Add("OwnAddressesRemain");
+        if (Adapters.Any(a => a.Dns.Any(Reserved))) issues.Add("OwnDnsRemains");
+        return issues.ToArray();
+    }
 }

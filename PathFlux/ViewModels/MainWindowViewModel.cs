@@ -27,6 +27,11 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     public ProxyProtocol[] Protocols { get; } = Enum.GetValues<ProxyProtocol>();
     public SelectorKind[] Selectors { get; } = [SelectorKind.ProcessName, SelectorKind.ExecutablePath];
     public NetworkTransport[] Networks { get; } = Enum.GetValues<NetworkTransport>();
+    public UdpRelayMode[] UdpRelayModes { get; } = Enum.GetValues<UdpRelayMode>();
+    public string[] UdpRelayModeNames { get; } = ["Standard SOCKS5", "Docker NAT (Explicit Port Mapping)"];
+    public string[] NetworkNames { get; } = ["TCP", "UDP", "TCP + UDP"];
+    public int ProfileUdpModeIndex { get => (int)ProfileUdpRelayMode; set { if (value is 0 or 1) ProfileUdpRelayMode = (UdpRelayMode)value; } }
+    public int RuleNetworkIndex { get => (int)RuleNetwork; set { if (value is >= 0 and <= 2) RuleNetwork = (NetworkTransport)value; } }
     public RouteAction[] Actions { get; } = Enum.GetValues<RouteAction>();
     public string[] ProcessSortOptions { get; } = ["Имя", "PID", "Путь"];
     public string[] Themes { get; } = ["Dark", "Light", "System"];
@@ -45,6 +50,9 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private ProxyProtocol _profileProtocol = ProxyProtocol.Socks5;
     [ObservableProperty] private string _profileHost = "127.0.0.1";
     [ObservableProperty] private string _profilePort = "1080";
+    [ObservableProperty] private UdpRelayMode _profileUdpRelayMode;
+    [ObservableProperty] private string _profileUdpPortFirst = "";
+    [ObservableProperty] private string _profileUdpPortLast = "";
     [ObservableProperty] private bool _profileEnabled = true;
     [ObservableProperty] private string _profileTlsServerName = "";
     [ObservableProperty] private string _profileUsername = "";
@@ -75,6 +83,15 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private string _selectedTheme = "Dark";
     [ObservableProperty] private bool _bypassLan;
     [ObservableProperty] private string _refreshSeconds = "5";
+    [ObservableProperty] private bool _experimentalSocksUdp;
+    [ObservableProperty] private string _liveUdpText = "UDP-посредники не запущены.";
+    [ObservableProperty] private bool _isRecordingUdp;
+    [ObservableProperty] private string _udpRecordingPath = "";
+    private int _udpRecordedSamples;
+    public bool IsSocks => ProfileProtocol == ProxyProtocol.Socks5;
+    public bool IsDockerNat => IsSocks && ProfileUdpRelayMode == UdpRelayMode.DockerNat;
+    partial void OnProfileUdpRelayModeChanged(UdpRelayMode value) { OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpModeIndex)); }
+    partial void OnRuleNetworkChanged(NetworkTransport value) => OnPropertyChanged(nameof(RuleNetworkIndex));
 
     // Failed can still mean that network cleanup has not finished. Require Stop before editing.
     public bool EngineActive => _state != EngineState.Stopped;
@@ -97,7 +114,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     partial void OnIsBusyChanged(bool value) => NotifyPermissions();
     partial void OnIsInitializedChanged(bool value) => NotifyPermissions();
     partial void OnProfileProtocolChanged(ProxyProtocol value)
-    { OnPropertyChanged(nameof(IsHttps)); OnPropertyChanged(nameof(ProfileUdpStatus)); }
+    { OnPropertyChanged(nameof(IsHttps)); OnPropertyChanged(nameof(IsSocks)); OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpStatus)); }
     partial void OnProfileHostChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnProfilePortChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnProfileTlsServerNameChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
@@ -114,6 +131,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (p is null) { OnPropertyChanged(nameof(ProfileUdpStatus)); return; }
         ProfileName = p.Name; ProfileProtocol = p.Protocol; ProfileHost = p.Host; ProfilePort = p.Port.ToString();
         ProfileEnabled = p.Enabled; ProfileTlsServerName = p.TlsServerName ?? "";
+        ProfileUdpRelayMode = p.UdpRelayMode; ProfileUdpPortFirst = p.UdpPublishedPortFirst?.ToString() ?? ""; ProfileUdpPortLast = p.UdpPublishedPortLast?.ToString() ?? "";
         ClearCredentialEditor();
         CredentialStatus = p.CredentialsRef is null ? "Авторизация не сохранена."
             : "Авторизация защищена Windows DPAPI. Пароль не отображается.";
@@ -138,6 +156,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             EngineSha256 = _configuration.Settings.EngineSha256;
             SelectedTheme = _configuration.Settings.Theme;
             BypassLan = _configuration.Settings.BypassLan;
+            ExperimentalSocksUdp = _configuration.Settings.ExperimentalSocksUdp;
             RefreshSeconds = _configuration.Settings.ProcessRefreshSeconds.ToString();
             ThemeChanged?.Invoke(SelectedTheme);
             var c = await engine.GetCapabilitiesAsync(ct);
@@ -155,6 +174,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!CanEdit) return;
         SelectedProfile = null; ProfileName = "Новый прокси"; ProfileProtocol = ProxyProtocol.Socks5;
         ProfileHost = "127.0.0.1"; ProfilePort = "1080"; ProfileEnabled = true; ProfileTlsServerName = "";
+        ProfileUdpRelayMode = UdpRelayMode.Standard; ProfileUdpPortFirst = ""; ProfileUdpPortLast = "";
         ClearCredentialEditor(); CredentialStatus = "Авторизация не сохранена.";
     }
     [RelayCommand] private Task SaveProfileAsync() => RunAsync(async ct =>
@@ -164,6 +184,13 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             throw new EditorValidationException("Укажите название и хост профиля.");
         if (!int.TryParse(ProfilePort, out var port) || port is < 1 or > 65535)
             throw new EditorValidationException("Порт должен быть числом от 1 до 65535.");
+        int? first = null, last = null;
+        if (IsDockerNat)
+        {
+            if (!int.TryParse(ProfileUdpPortFirst, out int begin) || !int.TryParse(ProfileUdpPortLast, out int end) || begin < 1 || end > 65535 || begin > end)
+                throw new EditorValidationException("Укажите корректный диапазон опубликованных UDP-портов: 1–65535, начало не больше конца.");
+            first = begin; last = end;
+        }
         if (ReplaceCredentials && RemoveCredentials) throw new EditorValidationException("Выберите замену либо удаление авторизации.");
         if (ReplaceCredentials && string.IsNullOrEmpty(ProfileUsername)) throw new EditorValidationException("Укажите логин для авторизации.");
         var previous = SelectedProfile;
@@ -175,7 +202,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         {
             Id = previous?.Id ?? Guid.NewGuid(), Name = ProfileName.Trim(), Enabled = ProfileEnabled,
             Protocol = ProfileProtocol, Host = ProfileHost.Trim(), Port = port, CredentialsRef = reference,
-            TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null
+            TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null,
+            UdpRelayMode = IsSocks ? ProfileUdpRelayMode : UdpRelayMode.Standard, UdpPublishedPortFirst = first, UdpPublishedPortLast = last
         };
         if (previous is not null && UdpVerificationPolicy.Fingerprint(previous) == UdpVerificationPolicy.Fingerprint(p))
             p = p with { UdpVerification = previous.UdpVerification };
@@ -274,7 +302,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     }, true);
     [RelayCommand] private Task StopAsync() => RunAsync(async ct =>
     {
-        await engine.StopAsync(ct); await UpdateStatusAsync(ct); Notice = "Запрос остановки выполнен."; AddLog("Запрос остановки выполнен.");
+        await engine.StopAsync(ct); await UpdateStatusAsync(ct); Notice = StatusDetail; AddLog(StatusDetail);
     });
     [RelayCommand] private Task TestTcpAsync() => RunAsync(async ct =>
     {
@@ -316,7 +344,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         { Profiles = _configuration.Profiles.Select(p => p.Id == profile.Id ? p with { UdpVerification = result.Evidence } : p).ToList() };
         try { await PersistAsync(next, ct); }
         catch { DiagnosticText = details + "\nНе удалось сохранить результат. Исторический статус профиля не изменён."; throw; }
-        DiagnosticText = details + "\nРезультат сохранён локально. UDP-правила Proxy остаются Reject до приёмки маршрутизации TUN.";
+        DiagnosticText = details + "\nРезультат сохранён локально. Echo не включает экспериментальный UDP автоматически.";
         Notice = result.Success ? "UDP echo завершён. Подтверждён только relay к указанной цели; TUN и Discord voice не проверены."
             : "UDP echo не подтвердил передачу. Результат диагностики сохранён; скрытого Direct fallback нет.";
         AddLog(result.Success ? "UDP echo: результат сохранён; TUN и Discord voice не проверены."
@@ -328,7 +356,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!int.TryParse(RefreshSeconds, out var interval) || interval is < 2 or > 300)
             throw new EditorValidationException("Интервал обновления должен быть от 2 до 300 секунд.");
         var settings = _configuration.Settings with
-        { EnginePath = EnginePath.Trim(), EngineSha256 = EngineSha256.Trim(), Theme = SelectedTheme, BypassLan = BypassLan, ProcessRefreshSeconds = interval };
+        { EnginePath = EnginePath.Trim(), EngineSha256 = EngineSha256.Trim(), Theme = SelectedTheme, BypassLan = BypassLan, ProcessRefreshSeconds = interval, ExperimentalSocksUdp = ExperimentalSocksUdp };
         await PersistAsync(_configuration with { Settings = settings }, ct); ThemeChanged?.Invoke(SelectedTheme);
         Notice = "Настройки сохранены. Для запуска укажите доверенный sing-box и его SHA-256.";
     }, true);
@@ -387,6 +415,39 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         StatusText = s.State switch { EngineState.Stopped => "Остановлен", EngineState.Starting => "Запуск", EngineState.Running => "Движок запущен",
             EngineState.Degraded => "Ограниченный режим", EngineState.Stopping => "Остановка", _ => "Ошибка движка" };
         StatusDetail = s.Message + (s.ProcessId is { } pid ? $" · PID {pid}" : ""); NotifyPermissions();
+        var stats = s.Udp ?? [];
+        LiveUdpText = stats.Count == 0 ? "UDP-посредники не запущены. Включение — вручную в настройках; нужен SOCKS5 и UDP-правило." :
+            string.Join("\n\n", stats.Select(u => $"Профиль {Profiles.FirstOrDefault(p => p.Id == u.ProfileId)?.Name ?? u.ProfileId.ToString()}: {BridgeStateLabel(u.State)}\nАктивных ассоциаций: {u.ActiveAssociations} · отправлено: {u.SentPackets} · получено: {u.ReceivedPackets}\nПереподключений: {u.Reconnects} · FRAG отклонено: {u.DroppedFragments} · некорректных: {u.DroppedInvalid}\nПоследняя ошибка: {u.LastError ?? "нет"}"));
+        if (IsRecordingUdp)
+        {
+            try
+            {
+                await System.IO.File.AppendAllTextAsync(UdpRecordingPath, System.Text.Json.JsonSerializer.Serialize(new
+                { SchemaVersion = 1, TimestampUtc = DateTimeOffset.UtcNow, EngineState = s.State.ToString(), EngineProcessId = s.ProcessId, Udp = stats }) + "\n", ct);
+                if (++_udpRecordedSamples >= 7200) IsRecordingUdp = false;
+            }
+            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+            { IsRecordingUdp = false; AddLog("Не удалось записать UDP-метрики. Сбор остановлен."); }
+        }
+    }
+    private static string BridgeStateLabel(string state) => state switch
+    {
+        "Listening" => "Ожидает соединений", "Active" => "Активен", "Waiting / Reconnecting" => "Ожидание / переподключение",
+        "Failed" => "Ошибка; UDP заблокирован", "Stopped" => "Остановлен", _ => "Неизвестно"
+    };
+    [RelayCommand] private async Task ToggleUdpRecordingAsync()
+    {
+        if (IsRecordingUdp) { IsRecordingUdp = false; Notice = "Сбор UDP-метрик остановлен: " + UdpRecordingPath; return; }
+        try
+        {
+            string directory = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux", "diagnostics");
+            System.IO.Directory.CreateDirectory(directory);
+            UdpRecordingPath = System.IO.Path.Combine(directory, "udp-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            await System.IO.File.WriteAllTextAsync(UdpRecordingPath, "");
+            _udpRecordedSamples = 0; IsRecordingUdp = true;
+            Notice = "Сбор UDP-метрик включён (до 4 часов). Пакеты и credentials не записываются.";
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException) { Notice = "Не удалось создать файл UDP-метрик."; }
     }
     private void NotifyPermissions()
     {
@@ -401,7 +462,10 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         var edited = profile with
         {
             Protocol = ProfileProtocol, Host = ProfileHost.Trim(), Port = port,
-            TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null
+            TlsServerName = IsHttps && !string.IsNullOrWhiteSpace(ProfileTlsServerName) ? ProfileTlsServerName.Trim() : null,
+            UdpRelayMode = IsSocks ? ProfileUdpRelayMode : UdpRelayMode.Standard,
+            UdpPublishedPortFirst = IsDockerNat && int.TryParse(ProfileUdpPortFirst, out int begin) ? begin : null,
+            UdpPublishedPortLast = IsDockerNat && int.TryParse(ProfileUdpPortLast, out int end) ? end : null
         };
         return UdpVerificationPolicy.Fingerprint(profile) == UdpVerificationPolicy.Fingerprint(edited);
     }

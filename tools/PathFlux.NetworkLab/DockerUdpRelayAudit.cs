@@ -17,7 +17,7 @@ public static class DockerUdpRelayAudit
             {
                 var result = await UdpProbe.DnsThroughBridgeAsync(bridge, ct);
                 report.Cases.Add(new("DockerUdpDnsRelay" + i, result.Success, result.Success, true, false,
-                    new() { ["Sent"] = bridge.SentPackets, ["Received"] = bridge.ReceivedPackets,
+                    new() { ["Sent"] = checked((int)bridge.SentPackets), ["Received"] = checked((int)bridge.ReceivedPackets),
                         ["AdvertisedPort"] = bridge.LastAdvertisedRelay?.Port ?? 0, ["EffectivePort"] = bridge.LastEffectiveRelay?.Port ?? 0 }));
                 if (!result.Success) throw new InvalidOperationException("DockerUdpDnsReplyNotVerified");
             }

@@ -10,6 +10,19 @@ namespace PathFlux.Infrastructure.Tests;
 public sealed class UdpRelayDiagnosticsTests
 {
     [Theory]
+    [InlineData(true)] [InlineData(false)]
+    public async Task DockerNatProbeUsesDynamicPublishedPortAndRejectsAnUnpublishedRelay(bool permitted)
+    {
+        await using var echo = new UdpEchoServer();
+        await using var relay = new Socks5UdpRelay(echo, new() { AdvertisedAddress = IPAddress.Parse("172.22.0.2") });
+        var profile = relay.Profile with { UdpRelayMode = UdpRelayMode.DockerNat, UdpPublishedPortFirst = 1, UdpPublishedPortLast = permitted ? 65535 : 1 };
+        var result = await Diagnostics().TestUdpRelayAsync(profile, Options(echo), default);
+        Assert.Equal(permitted, result.Success);
+        Assert.All(relay.ClientEndpoints, endpoint => Assert.Equal(new(IPAddress.Any, 0), endpoint));
+        Assert.Equal(permitted ? 3 : 0, echo.ReceivedPackets);
+        if (!permitted) Assert.Contains("диапазон Docker NAT", result.Message);
+    }
+    [Theory]
     [InlineData(3)]
     [InlineData(8)]
     public async Task VerifiesRealIndependentEchoRoundtripsAndAdvertisesBoundUdpEndpoint(int count)

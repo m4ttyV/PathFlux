@@ -1,20 +1,34 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Net;
 using PathFlux.Application;
 using PathFlux.Domain;
 namespace PathFlux.Engine;
 
 public sealed class SingBoxConfigGenerator(ISecretStore secrets)
 {
+    private sealed record UdpOutbound(IPEndPoint EndPoint, ProxyCredentials LocalCredentials);
     public const string InterfaceName = "PathFlux-TUN";
     public Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false, Version? engineVersion = null)
         => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, guards: null);
-    // No persisted setting or agent IPC field can select this path. NetworkLab only.
+    // Agent owns the live guards; a feature flag alone cannot create a working UDP outbound.
+    internal Task<string> GenerateAgentAsync(ProxyConfiguration configuration, IReadOnlyDictionary<Guid, StrictSocksUdpBridge> guards,
+        CancellationToken ct, Version? engineVersion = null)
+        => GenerateCoreAsync(configuration, ct, false, engineVersion, configuration.Settings.ExperimentalSocksUdp ?
+            guards.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)) : null);
+    // sing-box check does not connect. Validation must not create transport listeners in the unelevated UI.
+    internal Task<string> GenerateValidationAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null)
+    {
+        var used = configuration.Rules.Where(ExperimentalUdpPolicy.UsesUdp).Select(r => r.ProfileId).ToHashSet();
+        var descriptors = configuration.Settings.ExperimentalSocksUdp ? configuration.Profiles.Where(p => used.Contains(p.Id) && p.Protocol == ProxyProtocol.Socks5)
+            .ToDictionary(p => p.Id, p => new UdpOutbound(new(IPAddress.Loopback, 9), new("validation-only", "validation-only"))) : null;
+        return GenerateCoreAsync(configuration, ct, false, engineVersion, descriptors);
+    }
     internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null,
         IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards = null)
-        => GenerateCoreAsync(configuration, ct, false, engineVersion, guards);
+        => GenerateCoreAsync(configuration, ct, false, engineVersion, guards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)));
     private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion,
-        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards)
+        IReadOnlyDictionary<Guid, UdpOutbound>? guards)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));

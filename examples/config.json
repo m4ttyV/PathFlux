@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "defaultAction": "direct",
   "profiles": [
     {
@@ -35,6 +35,7 @@
     "language": "ru",
     "processRefreshSeconds": 5,
     "bypassLan": false,
-    "dnsMode": "System"
+    "dnsMode": "System",
+    "experimentalSocksUdp": false
   }
 }

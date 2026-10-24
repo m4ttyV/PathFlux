@@ -1,12 +1,13 @@
 namespace PathFlux.Domain;
 
 public enum ProxyProtocol { Socks5, HttpConnect, HttpsConnect }
+public enum UdpRelayMode { Standard, DockerNat }
 public enum SelectorKind { ProcessName, ExecutablePath, ProcessInstance }
 public enum NetworkTransport { Tcp, Udp, Both }
 public enum RouteAction { Direct, Block, Proxy }
 public enum FailurePolicy { Block, Direct }
 public enum RuleLifetime { Persistent, UntilProcessExit }
-public enum SupportStatus { Implemented, Partial, Unsupported, NotVerified, Failed }
+public enum SupportStatus { Implemented, Partial, Unsupported, NotVerified, Failed, Experimental }
 public enum EngineState { Stopped, Starting, Running, Degraded, Stopping, Failed }
 
 public sealed record ProxyProfile
@@ -20,6 +21,9 @@ public sealed record ProxyProfile
     public string? CredentialsRef { get; init; }
     public string? TlsServerName { get; init; }
     public UdpProbeEvidence? UdpVerification { get; init; }
+    public UdpRelayMode UdpRelayMode { get; init; }
+    public int? UdpPublishedPortFirst { get; init; }
+    public int? UdpPublishedPortLast { get; init; }
     public override string ToString() => Name;
 }
 public sealed record ProcessInstanceId(int Pid, DateTimeOffset StartTimeUtc);
@@ -47,10 +51,11 @@ public sealed record AppSettings
     public int ProcessRefreshSeconds { get; init; } = 5;
     public bool BypassLan { get; init; }
     public string DnsMode { get; init; } = "System";
+    public bool ExperimentalSocksUdp { get; init; }
 }
 public sealed record ProxyConfiguration
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public RouteAction DefaultAction { get; init; } = RouteAction.Direct;
     public List<ProxyProfile> Profiles { get; init; } = [];
     public List<RoutingRule> Rules { get; init; } = [];
@@ -64,7 +69,9 @@ public sealed record ProcessInfo(int Pid, string Name, string? ExecutablePath, D
 public sealed record EngineCapabilities(
     SupportStatus ProcessName, SupportStatus ExecutablePath, SupportStatus ExactPid,
     SupportStatus Children, SupportStatus Tcp, SupportStatus Udp, SupportStatus KillSwitch);
-public sealed record EngineStatus(EngineState State, string Message, int? ProcessId = null);
+public sealed record UdpBridgeStatistics(Guid ProfileId, string State, int ActiveAssociations, long SentPackets, long ReceivedPackets,
+    long Reconnects, long DroppedFragments, long DroppedInvalid, string? LastError);
+public sealed record EngineStatus(EngineState State, string Message, int? ProcessId = null, IReadOnlyList<UdpBridgeStatistics>? Udp = null);
 public sealed record ValidationIssue(string Code, string Message, Guid? RuleId = null, bool IsWarning = false);
 public sealed record ConfigValidationResult(IReadOnlyList<ValidationIssue> Issues)
 {

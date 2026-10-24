@@ -57,7 +57,7 @@ public static class DockerUdpAudit
                     if (scenario == "UnpublishedPort") selectedGood &= bridge.AssociateAttempts > 0 && bridge.LastEffectiveRelay is null;
                     if (scenario == "ProductionReject") selectedGood &= bridge.AssociateAttempts == 0;
                     counters["SelectedReceived"] = a.Received; counters["ControlReceived"] = b.Received;
-                    counters["RelaySent"] = bridge.SentPackets; counters["RelayReceived"] = bridge.ReceivedPackets;
+                    counters["RelaySent"] = checked((int)bridge.SentPackets); counters["RelayReceived"] = checked((int)bridge.ReceivedPackets);
                     counters["AssociateAttempts"] = bridge.AssociateAttempts;
                     counters["AdvertisedPort"] = bridge.LastAdvertisedRelay?.Port ?? 0;
                     counters["EffectivePort"] = bridge.LastEffectiveRelay?.Port ?? 0;

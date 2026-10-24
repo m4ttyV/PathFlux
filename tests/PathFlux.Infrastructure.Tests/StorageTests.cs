@@ -27,7 +27,7 @@ public sealed class StorageTests : IDisposable
         await store.SaveAsync(original with { Profiles = [updated] }, _ct);
         var restored = await new JsonConfigurationStore(FilePath).LoadAsync(_ct);
         Assert.Equal(updated, Assert.Single(restored.Profiles));
-        Assert.Equal(1, restored.SchemaVersion);
+        Assert.Equal(2, restored.SchemaVersion);
         var json = await File.ReadAllTextAsync(FilePath, _ct);
         Assert.Contains("\"udpVerification\"", json);
         Assert.Contains("\"verified\"", json);
@@ -99,7 +99,7 @@ public sealed class StorageTests : IDisposable
     {
         Directory.CreateDirectory(_directory);
         await File.WriteAllTextAsync(FilePath, "broken", _ct);
-        const string future = "{\"schemaVersion\":2}";
+        const string future = "{\"schemaVersion\":3}";
         await File.WriteAllTextAsync(FilePath + ".bak", future, _ct);
         var store = new JsonConfigurationStore(FilePath);
         await Assert.ThrowsAsync<NotSupportedException>(() => store.LoadAsync(_ct));

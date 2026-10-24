@@ -78,8 +78,8 @@ public static class UdpTunAudit
                     if (scenario.StartsWith("FragmentedReply", StringComparison.Ordinal)) selectedGood &= echo.ReceivedPackets == 3 && bridge.DroppedFragments == 3;
                     counters["Received"] = received; counters["ControlReceived"] = controlReceived;
                     counters["AssociateRequests"] = relay.AssociateRequests; counters["ForwardedPackets"] = relay.ForwardedPackets; counters["EchoPackets"] = echo.ReceivedPackets;
-                    counters["DroppedFragments"] = bridge.DroppedFragments; counters["DroppedInvalid"] = bridge.DroppedInvalid;
-                    counters["Reconnects"] = bridge.Reconnects;
+                    counters["DroppedFragments"] = checked((int)bridge.DroppedFragments); counters["DroppedInvalid"] = checked((int)bridge.DroppedInvalid);
+                    counters["Reconnects"] = checked((int)bridge.Reconnects);
                     if (!selectedGood || !controlGood) report.LaboratoryDiagnostic = engine.Diagnostic
                         .Replace(bridge.LocalCredentials.Username, "REDACTED", StringComparison.Ordinal)
                         .Replace(bridge.LocalCredentials.Password, "REDACTED", StringComparison.Ordinal);

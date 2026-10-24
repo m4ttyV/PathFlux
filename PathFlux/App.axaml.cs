@@ -23,14 +23,18 @@ public partial class App : Avalonia.Application
             foreach (var validator in BindingPlugins.DataValidators.OfType<DataAnnotationsValidationPlugin>().ToArray())
                 BindingPlugins.DataValidators.Remove(validator);
             var smokeTest = desktop.Args?.Contains("--smoke-test") == true;
+            string? acceptance = desktop.Args is { Length: 3 } arguments && arguments[0] == "--udp-acceptance" &&
+                Path.IsPathFullyQualified(arguments[1]) && arguments[2] == "--allow-system-tun" ? arguments[1] : null;
             // Smoke mode uses in-memory sample data and never saves over the user's state.
             var dataDirectory = smokeTest ? Path.Combine(Path.GetTempPath(), "PathFlux-smoke-" + Guid.NewGuid().ToString("N"))
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux");
+                : acceptance is not null ? Path.Combine(acceptance, "ui-data") : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux");
+            if (acceptance is not null && Directory.Exists(dataDirectory)) throw new InvalidOperationException("Acceptance requires a new data directory.");
             var secretStore = new DpapiSecretStore(Path.Combine(dataDirectory, "secrets"));
             IConfigurationStore store = smokeTest ? new SmokeConfigurationStore()
                 : new JsonConfigurationStore(Path.Combine(dataDirectory, "config.json"));
+            var adapter = new SingBoxEngineAdapter(secretStore);
             var viewModel = new MainWindowViewModel(store,
-                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), new SingBoxEngineAdapter(secretStore));
+                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), adapter);
             viewModel.ThemeChanged += theme => RequestedThemeVariant = theme switch
                 { "Light" => ThemeVariant.Light, "System" => ThemeVariant.Default, _ => ThemeVariant.Dark };
             var window = new MainWindow { DataContext = viewModel };
@@ -39,6 +43,14 @@ public partial class App : Avalonia.Application
                 try
                 {
                     await viewModel.InitializeAsync();
+                    if (acceptance is not null)
+                    {
+                        int acceptanceExit = await UiUdpAcceptance.RunAsync(viewModel, adapter, acceptance);
+                        Environment.ExitCode = acceptanceExit;
+                        desktop.Exit += (_, eventArgs) => eventArgs.ApplicationExitCode = acceptanceExit;
+                        window.Close();
+                        return;
+                    }
                     if (smokeTest)
                     {
                         var args = desktop.Args ?? [];
@@ -74,7 +86,7 @@ public partial class App : Avalonia.Application
                 catch
                 {
                     Environment.ExitCode = 3;
-                    if (smokeTest) window.Close();
+                    if (smokeTest || acceptance is not null) window.Close();
                 }
             };
             desktop.MainWindow = window;

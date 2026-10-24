@@ -12,5 +12,5 @@ try {
     Copy-Item -LiteralPath 'docs', 'examples' -Destination $Output -Recurse -Force
     $helperDirectory = Join-Path $Output 'scripts'
     New-Item -ItemType Directory -Path $helperDirectory -Force | Out-Null
-    Copy-Item -LiteralPath 'scripts\get-engine.ps1', 'scripts\udp-echo-server.py', 'scripts\run-tun-lab.ps1' -Destination $helperDirectory -Force
+    Copy-Item -LiteralPath 'scripts\get-engine.ps1', 'scripts\udp-echo-server.py', 'scripts\run-tun-lab.ps1', 'scripts\run-ui-udp-acceptance.ps1', 'scripts\summarize-udp-metrics.ps1' -Destination $helperDirectory -Force
 } finally { Pop-Location }

@@ -79,7 +79,8 @@ public class ConfigTests
     }
     [Fact] public async Task AdapterRejectsInvalidConfigurationWithoutLaunchingAgent()
     {
-        await using var adapter = new SingBoxEngineAdapter(new Secrets());
+        await using var adapter = new SingBoxEngineAdapter(new Secrets(), Path.Combine(Path.GetTempPath(), "unused-agent.exe"),
+            Path.Combine(Path.GetTempPath(), "PathFlux-test-" + Guid.NewGuid().ToString("N"), "recovery.json"));
         var result = await adapter.ValidateAsync(Config(ProxyRule() with { IncludeChildren = true }), default);
         Assert.False(result.IsValid);
         Assert.Equal(EngineState.Stopped, (await adapter.GetStatusAsync(default)).State);

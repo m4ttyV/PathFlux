@@ -7,7 +7,7 @@ using PathFlux.Domain;
 
 namespace PathFlux.Engine;
 
-// Experimental only. No persisted configuration or agent request can enable this transport.
+// Experimental transport; only the agent owns production instances.
 internal sealed record UdpRelayBinding(int? DockerPortFirst = null, int? DockerPortLast = null)
 {
     public IPEndPoint Resolve(IPEndPoint tcpPeer, IPEndPoint advertised)
@@ -44,24 +44,28 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
     private readonly SemaphoreSlim _slots = new(128);
     private readonly Task _accept;
     private long _nextSession;
-    private int _disposed, _attempts;
-    private int _associations, _reconnects, _fragments, _invalid, _sent, _received;
+    private int _disposed, _attempts, _active, _failed;
+    private long _associations, _reconnects, _fragments, _invalid, _sent, _received;
+    private string? _lastError;
     public ProxyCredentials LocalCredentials { get; } = new(Convert.ToHexString(RandomNumberGenerator.GetBytes(16)), Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
     public IPEndPoint EndPoint => (IPEndPoint)_listener.LocalEndpoint;
-    public int Associations => Volatile.Read(ref _associations);
+    public long Associations => Volatile.Read(ref _associations);
+    public bool HasFailed => Volatile.Read(ref _failed) != 0;
+    public UdpBridgeStatistics Snapshot(Guid profileId) => new(profileId, HasFailed ? "Failed" : Volatile.Read(ref _disposed) != 0 ? "Stopped" :
+        Volatile.Read(ref _active) > 0 ? "Active" : Volatile.Read(ref _attempts) > 0 ? "Waiting / Reconnecting" : "Listening",
+        Volatile.Read(ref _active), SentPackets, ReceivedPackets, Reconnects, DroppedFragments, DroppedInvalid, Volatile.Read(ref _lastError));
     public int AssociateAttempts => Volatile.Read(ref _attempts);
     public IPEndPoint? LastAdvertisedRelay { get; private set; }
     public IPEndPoint? LastEffectiveRelay { get; private set; }
-    public int Reconnects => Volatile.Read(ref _reconnects);
-    public int DroppedFragments => Volatile.Read(ref _fragments);
-    public int DroppedInvalid => Volatile.Read(ref _invalid);
-    public int SentPackets => Volatile.Read(ref _sent);
-    public int ReceivedPackets => Volatile.Read(ref _received);
+    public long Reconnects => Volatile.Read(ref _reconnects);
+    public long DroppedFragments => Volatile.Read(ref _fragments);
+    public long DroppedInvalid => Volatile.Read(ref _invalid);
+    public long SentPackets => Volatile.Read(ref _sent);
+    public long ReceivedPackets => Volatile.Read(ref _received);
 
     public StrictSocksUdpBridge(IPEndPoint upstream, UdpRelayBinding? binding = null, ProxyCredentials? credentials = null)
     {
-        // This revision supports local Docker/proxy endpoints only; no DNS resolution or routing bypass.
-        if (!IPAddress.IsLoopback(upstream.Address) || upstream.Port == 0) throw new ArgumentException("LoopbackProxyRequired", nameof(upstream));
+        if (!PathFlux.Application.ExperimentalUdpPolicy.IsUnicast(upstream.Address) || upstream.Port == 0) throw new ArgumentException("UnicastProxyRequired", nameof(upstream));
         _upstream = upstream; _binding = binding ?? new(); _credentials = credentials;
         _listener.Start(128); _accept = AcceptAsync();
     }
@@ -75,11 +79,42 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
                 var client = await _listener.AcceptTcpClientAsync(_stop.Token);
                 if (!_slots.Wait(0)) { client.Dispose(); continue; }
                 long id = Interlocked.Increment(ref _nextSession);
-                var task = ServeAsync(client, _stop.Token); _sessions[id] = task;
-                _ = task.ContinueWith(_ => { _sessions.TryRemove(id, out var removed); _slots.Release(); }, TaskScheduler.Default);
+                var registered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _sessions[id] = RunSessionAsync(id, client, registered.Task);
+                registered.SetResult();
             }
         }
-        catch (Exception ex) when (Expected(ex)) { }
+        catch (Exception ex) when (Expected(ex)) { if (!_stop.IsCancellationRequested) FailClosed(); }
+        catch { FailClosed(); }
+    }
+    private async Task RunSessionAsync(long id, TcpClient client, Task registered)
+    {
+        await registered;
+        try { await ServeAsync(client, _stop.Token); }
+        catch { FailClosed(); }
+        finally { _slots.Release(); _sessions.TryRemove(id, out _); }
+    }
+
+    internal void FailClosed()
+    {
+        Interlocked.Exchange(ref _failed, 1);
+        Volatile.Write(ref _lastError, "UDP-посредник аварийно остановлен. UDP заблокирован без Direct fallback; остановите движок перед повторным запуском.");
+        _stop.Cancel(); _listener.Stop();
+    }
+    private void RecordError(Exception ex)
+    {
+        string message = ex switch
+        {
+            OperationCanceledException => "Истекло время ожидания UDP-ассоциации.",
+            SocketException => "SOCKS5 или UDP-релей недоступен; пакеты не отправляются напрямую.",
+            IOException when ex.Message == "UnpublishedDockerUdpPort" => "Dante вернул порт вне разрешённого диапазона Docker NAT.",
+            IOException when ex.Message == "ZeroUdpRelayPort" => "SOCKS5 вернул нулевой UDP-порт.",
+            IOException when ex.Message == "LiteralUdpEndpointRequired" => "SOCKS5 вернул доменное имя релея; поддерживается только буквальный IP.",
+            IOException when ex.Message == "SocksAuthenticationRejected" => "SOCKS5 отклонил авторизацию UDP-ассоциации.",
+            IOException when ex.Message == "UdpAssociateRejected" => "SOCKS5 отклонил UDP ASSOCIATE.",
+            _ => "Управляющее соединение UDP-ассоциации разорвано; выполняется переподключение."
+        };
+        Volatile.Write(ref _lastError, message);
     }
 
     private async Task ServeAsync(TcpClient client, CancellationToken stop)
@@ -121,13 +156,18 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
                 await stream.WriteAsync(Encode((IPEndPoint)local.Client.LocalEndPoint!, [], socksReply: true), ct);
                 tasks = [ReceiveLocalAsync(local, state, lifetime.Token), MaintainUpstreamAsync(local, state, first, lifetime.Token),
                     stream.ReadAsync(new byte[1], lifetime.Token).AsTask()];
-                await Task.WhenAny(tasks);
+                try { await Task.WhenAny(tasks); }
+                finally
+                {
+                    lifetime.Cancel();
+                    try { await Task.WhenAll(tasks); } catch (Exception ex) when (Expected(ex)) { }
+                }
             }
-            catch (Exception ex) when (Expected(ex)) { }
+            catch (Exception ex) when (Expected(ex)) { if (!lifetime.IsCancellationRequested) RecordError(ex); }
             finally
             {
                 lifetime.Cancel();
-                try { await Task.WhenAll(tasks); } catch (Exception ex) when (Expected(ex)) { }
+                try { await Task.WhenAll(tasks); } catch (Exception ex) when (Expected(ex)) { if (!stop.IsCancellationRequested) RecordError(ex); }
             }
         }
     }
@@ -191,16 +231,22 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
                     Interlocked.Increment(ref _reconnects);
                 }
                 catch (Exception ex) when (Expected(ex))
-                { await Task.Delay(backoff, ct); backoff = Math.Min(2000, backoff * 2); continue; }
+                { if (!ct.IsCancellationRequested) RecordError(ex); await Task.Delay(backoff, ct); backoff = Math.Min(2000, backoff * 2); continue; }
             }
             Interlocked.Increment(ref _associations);
+            Interlocked.Increment(ref _active);
             using var epoch = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var control = association.Tcp.GetStream().ReadAsync(new byte[1], epoch.Token).AsTask();
             var receive = ReceiveUpstreamAsync(local, state, association, control, epoch.Token);
-            await Task.WhenAny(control, receive);
-            lock (state.Gate) { if (state.Current == association) state.Current = null; }
-            epoch.Cancel(); association.Dispose(); association = null;
-            try { await Task.WhenAll(control, receive); } catch (Exception ex) when (Expected(ex)) { }
+            try { await Task.WhenAny(control, receive); }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+                lock (state.Gate) { if (state.Current == association) state.Current = null; }
+                epoch.Cancel(); association.Dispose(); association = null;
+            }
+            if (!ct.IsCancellationRequested) RecordError(new IOException());
+            try { await Task.WhenAll(control, receive); } catch (Exception ex) when (Expected(ex)) { if (!ct.IsCancellationRequested) RecordError(ex); }
             await Task.Delay(backoff, ct); backoff = Math.Min(2000, backoff * 2);
         }
     }
@@ -308,7 +354,7 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _stop.Cancel(); _listener.Stop(); await _accept;
-        await Task.WhenAll(_sessions.Values); _stop.Dispose();
-        // Slots are intentionally not disposed: completion continuations may still release them.
+        try { await Task.WhenAll(_sessions.Values); } catch { /* Fatal faults were observed and the transport was closed. */ }
+        _slots.Dispose(); _stop.Dispose();
     }
 }

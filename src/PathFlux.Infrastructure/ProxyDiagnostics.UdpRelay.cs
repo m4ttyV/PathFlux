@@ -35,11 +35,13 @@ public sealed partial class ProxyDiagnostics
         {
             if (profile.Protocol != ProxyProtocol.Socks5)
                 return Result(UdpRelayStatus.Unsupported, "Этот протокол не поддерживает SOCKS5 UDP relay.");
+            if (!ConfigurationValidator.ValidatePolicy([], [profile]).IsValid)
+                throw new ProbeException("validation", "Некорректны параметры профиля или диапазон опубликованных UDP-портов.");
             if (!UdpVerificationPolicy.IsProbeTarget(options.TargetHost, out var target) ||
                 options.TargetPort is < 1 or > 65535 || options.PacketCount is < 3 or > 8)
                 throw new ProbeException("validation", "Укажите допустимый IP echo-сервера, порт 1–65535 и от 3 до 8 пакетов. DNS-имена, multicast, broadcast и scoped IPv6 не поддерживаются.");
             targetText = target.ToString();
-            var proxyHost = NormalizeHost(profile.Host);
+            var proxyHost = ExperimentalUdpPolicy.IsDockerHost(profile.Host) ? "127.0.0.1" : NormalizeHost(profile.Host);
             if (profile.Port is < 1 or > 65535)
                 throw new ProbeException("validation", "Некорректный порт прокси.");
             ProxyCredentials? credentials = null;
@@ -64,7 +66,8 @@ public sealed partial class ProxyDiagnostics
             stage = "authentication";
             await AuthenticateSocksAsync(stream, credentials, lifetime.Token).ConfigureAwait(false);
             stage = "udp-associate";
-            var relay = await AssociateRelayAsync(stream, udpLocal, remote.Address, lifetime.Token).ConfigureAwait(false);
+            var relay = await AssociateRelayAsync(stream, profile.UdpRelayMode == UdpRelayMode.DockerNat ? new(IPAddress.Any, 0) : udpLocal,
+                remote.Address, profile, lifetime.Token).ConfigureAwait(false);
             if (relay.AddressFamily != udpLocal.AddressFamily)
                 throw new ProbeException(stage, "Семейство адреса UDP relay несовместимо с TCP-ассоциацией.");
             udp.Connect(relay);
@@ -124,7 +127,7 @@ public sealed partial class ProxyDiagnostics
         }
     }
 
-    private static async Task<IPEndPoint> AssociateRelayAsync(Stream stream, IPEndPoint local, IPAddress tcpRemote, CancellationToken ct)
+    private static async Task<IPEndPoint> AssociateRelayAsync(Stream stream, IPEndPoint local, IPAddress tcpRemote, ProxyProfile profile, CancellationToken ct)
     {
         var address = local.Address.GetAddressBytes();
         var request = new byte[address.Length + 6];
@@ -166,6 +169,12 @@ public sealed partial class ProxyDiagnostics
         await stream.ReadExactlyAsync(port, ct).ConfigureAwait(false);
         var relayPort = (port[0] << 8) | port[1];
         if (relayPort == 0) throw new ProbeException("udp-associate", "Прокси вернул нулевой порт UDP relay.");
+        if (profile.UdpRelayMode == UdpRelayMode.DockerNat)
+        {
+            if (!tcpRemote.Equals(IPAddress.Loopback) || relayPort < profile.UdpPublishedPortFirst || relayPort > profile.UdpPublishedPortLast)
+                throw new ProbeException("udp-associate", "UDP-порт релея не входит в явный диапазон Docker NAT или прокси не является IPv4 loopback.");
+            relayAddress = tcpRemote;
+        }
         if (relayAddress.IsIPv4MappedToIPv6) relayAddress = relayAddress.MapToIPv4();
         if (relayAddress.Equals(IPAddress.Any) || relayAddress.Equals(IPAddress.IPv6Any)) relayAddress = tcpRemote;
         if (!UdpVerificationPolicy.IsProbeTarget(relayAddress.ToString(), out relayAddress))

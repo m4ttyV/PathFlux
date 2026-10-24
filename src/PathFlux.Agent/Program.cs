@@ -13,7 +13,7 @@ if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) 
 // Named event creation is atomic and its lifetime is not tied to an async continuation's thread.
 using var singletonEvent = new EventWaitHandle(false, EventResetMode.ManualReset, @"Global\PathFlux.NetworkAgent.Lifetime.v1", out bool created);
 if (!created) return 4;
-using var session = new EngineSession();
+await using var session = new EngineSession();
 try
 {
     using var parent = Process.GetProcessById(parentPid);
@@ -34,7 +34,7 @@ try
                 using (var startup = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
                     reply = await session.StartAsync(request.Configuration, request.Credentials ?? [], startup.Token);
                 break;
-            case "status": reply = new(true, session.Status); break;
+            case "status": reply = new(true, await session.GetStatusAsync(idle.Token)); break;
             case "stop":
                 await session.StopAsync(idle.Token);
                 await AgentProtocol.WriteAsync(pipe, new AgentReply(session.Status.State == EngineState.Stopped, session.Status), idle.Token);

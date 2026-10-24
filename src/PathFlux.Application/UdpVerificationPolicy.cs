@@ -16,7 +16,8 @@ public static class UdpVerificationPolicy
         var identity = JsonSerializer.Serialize(new
         {
             profile.Id, Protocol = (int)profile.Protocol, Host = profile.Host.Trim().ToLowerInvariant(),
-            profile.Port, profile.CredentialsRef, TlsServerName = profile.TlsServerName?.Trim().ToLowerInvariant()
+            profile.Port, profile.CredentialsRef, TlsServerName = profile.TlsServerName?.Trim().ToLowerInvariant(),
+            profile.UdpRelayMode, profile.UdpPublishedPortFirst, profile.UdpPublishedPortLast
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
     }
