@@ -71,6 +71,7 @@ public sealed class UdpDataplaneTests
         var path = Environment.GetEnvironmentVariable("PATHFLUX_TEST_ENGINE")!;
         var binaryLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         Process? process = null;
+        StrictSocksUdpBridge? bridge = null;
         try
         {
             var version = await EngineBinary.VerifyAsync(path, EngineTestBinary.ExpectedHash, ct);
@@ -80,12 +81,15 @@ public sealed class UdpDataplaneTests
             var generator = new SingBoxConfigGenerator(secrets);
             var production = JsonNode.Parse(await generator.GenerateAsync(config, ct, engineVersion: version))!;
             Assert.Equal("tcp", (string?)production["outbounds"]![1]!["network"]);
-            var json = experimental ? JsonNode.Parse(await generator.GenerateExperimentalUdpAsync(config, ct, version))! : production;
+            if (experimental) bridge = new StrictSocksUdpBridge(new(IPAddress.Parse(upstream.Host), upstream.Port), credentials:
+                upstream.CredentialsRef is null ? null : await secrets.GetAsync(upstream.CredentialsRef, ct));
+            var json = experimental ? JsonNode.Parse(await generator.GenerateExperimentalUdpAsync(config, ct, version,
+                new Dictionary<Guid, StrictSocksUdpBridge> { [upstream.Id] = bridge! }))! : production;
             // TEST-ONLY configuration: replace TUN and process rules with a local SOCKS inlet.
             // Let the engine exercise its UDP outbound; production still rejects Proxy UDP.
             json["inbounds"] = new JsonArray(new JsonObject
             { ["type"] = "socks", ["tag"] = "lab-in", ["listen"] = "127.0.0.1", ["listen_port"] = port });
-            json["route"] = new JsonObject { ["final"] = SingBoxConfigGenerator.Tag(upstream.Id) };
+            json["route"] = new JsonObject { ["final"] = experimental ? SingBoxConfigGenerator.UdpTag(upstream.Id) : SingBoxConfigGenerator.Tag(upstream.Id) };
             string text = json.ToJsonString();
             Assert.True(await EngineBinary.CheckAsync(path, text, ct));
             reservation.Dispose();
@@ -102,7 +106,7 @@ public sealed class UdpDataplaneTests
                     using var probe = new TcpClient();
                     await probe.ConnectAsync(IPAddress.Loopback, port, ct);
                     return new LabEngine(process, binaryLock, output, error,
-                        new ProxyProfile { Name = "Engine loopback inlet", Host = "127.0.0.1", Port = port });
+                        new ProxyProfile { Name = "Engine loopback inlet", Host = "127.0.0.1", Port = port }, bridge);
                 }
                 catch (SocketException) { await Task.Delay(50, ct); }
             }
@@ -117,6 +121,7 @@ public sealed class UdpDataplaneTests
                 process.Dispose();
             }
             binaryLock.Dispose();
+            if (bridge is not null) await bridge.DisposeAsync();
             throw;
         }
     }
@@ -146,7 +151,7 @@ public sealed class UdpDataplaneTests
         }
         public void Dispose() { tcp?.Stop(); tcp = null; udp?.Dispose(); udp = null; }
     }
-    private sealed class LabEngine(Process process, FileStream binaryLock, Task output, Task error, ProxyProfile profile) : IAsyncDisposable
+    private sealed class LabEngine(Process process, FileStream binaryLock, Task output, Task error, ProxyProfile profile, StrictSocksUdpBridge? bridge) : IAsyncDisposable
     {
         public ProxyProfile Profile => profile;
         public async ValueTask DisposeAsync()
@@ -157,7 +162,7 @@ public sealed class UdpDataplaneTests
                 await process.WaitForExitAsync(CancellationToken.None);
                 await Task.WhenAll(output, error);
             }
-            finally { process.Dispose(); binaryLock.Dispose(); }
+            finally { process.Dispose(); binaryLock.Dispose(); if (bridge is not null) await bridge.DisposeAsync(); }
         }
     }
     private sealed class Secrets(ProxyCredentials? credentials) : ISecretStore

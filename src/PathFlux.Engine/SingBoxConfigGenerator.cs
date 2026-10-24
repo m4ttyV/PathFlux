@@ -8,11 +8,13 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
 {
     public const string InterfaceName = "PathFlux-TUN";
     public Task<string> GenerateAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets = false, Version? engineVersion = null)
-        => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, laboratoryUdp: false);
+        => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, guards: null);
     // No persisted setting or agent IPC field can select this path. NetworkLab only.
-    internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null)
-        => GenerateCoreAsync(configuration, ct, false, engineVersion, laboratoryUdp: true);
-    private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion, bool laboratoryUdp)
+    internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null,
+        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards = null)
+        => GenerateCoreAsync(configuration, ct, false, engineVersion, guards);
+    private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion,
+        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
@@ -29,7 +31,7 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
                 ["tag"] = Tag(p.Id), ["server"] = p.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || p.Host.Equals("localhost.", StringComparison.OrdinalIgnoreCase) ? "127.0.0.1" : p.Host, ["server_port"] = p.Port,
                 ["connect_timeout"] = "10s"
             };
-            if (p.Protocol == ProxyProtocol.Socks5) { outbound["version"] = "5"; if (!laboratoryUdp) outbound["network"] = "tcp"; }
+            if (p.Protocol == ProxyProtocol.Socks5) { outbound["version"] = "5"; outbound["network"] = "tcp"; }
             if (p.Protocol == ProxyProtocol.HttpsConnect)
                 outbound["tls"] = new JsonObject { ["enabled"] = true, ["server_name"] = string.IsNullOrWhiteSpace(p.TlsServerName) ? p.Host : p.TlsServerName, ["insecure"] = false };
             if (p.CredentialsRef is not null)
@@ -42,6 +44,10 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
                 }
             }
             outbounds.Add(outbound);
+            if (p.Protocol == ProxyProtocol.Socks5 && guards?.TryGetValue(p.Id, out var bridge) == true)
+                outbounds.Add(new JsonObject { ["type"] = "socks", ["tag"] = UdpTag(p.Id), ["server"] = bridge.EndPoint.Address.ToString(),
+                    ["server_port"] = bridge.EndPoint.Port, ["version"] = "5", ["network"] = "udp", ["connect_timeout"] = "10s",
+                    ["username"] = bridge.LocalCredentials.Username, ["password"] = bridge.LocalCredentials.Password });
         }
         JsonArray rules = [];
         // Exact executable paths avoid exempting unrelated applications with a matching filename.
@@ -64,10 +70,10 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             {
                 var rule = new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value), ["network"] = network };
                 // A verified relay probe does not prove transparent TUN routing. Proxy UDP remains blocked.
-                bool labSocksUdp = laboratoryUdp && r.ProfileId is { } profileId && policy.Profiles.Any(p => p.Id == profileId && p.Protocol == ProxyProtocol.Socks5);
+                bool labSocksUdp = guards is not null && r.ProfileId is { } profileId && guards.ContainsKey(profileId) && policy.Profiles.Any(p => p.Id == profileId && p.Protocol == ProxyProtocol.Socks5);
                 if (r.Action == RouteAction.Block || (r.Action == RouteAction.Proxy && network == "udp" && !labSocksUdp))
                     rule["action"] = "reject";
-                else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : Tag(r.ProfileId!.Value); }
+                else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : network == "udp" ? UdpTag(r.ProfileId!.Value) : Tag(r.ProfileId!.Value); }
                 rules.Add(rule);
             }
         }
@@ -91,4 +97,5 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
     public static string Tag(Guid id) => $"proxy-{id:D}";
+    internal static string UdpTag(Guid id) => $"udp-guard-{id:D}";
 }

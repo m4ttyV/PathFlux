@@ -21,14 +21,42 @@ if (args.Length == 3 && args[0] == "recover-journal" && args[2] == "--archive-co
     catch (Exception ex) { Console.Error.WriteLine(ex is InvalidOperationException ? ex.Message : ex.GetType().Name); return 1; }
 }
 
-if (args.Length == 6 && args[0] == "elevate" && args[1] is "run-isolated" or "docker-tcp" or "udp-tun" && args[5] == "--allow-tun")
+if (args.Length is 6 or 8 && args[0] == "elevate" && args[1] is "run-isolated" or "docker-tcp" or "udp-tun" or "docker-udp" && args[^1] == "--allow-tun")
 {
     var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
     { UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
     foreach (var arg in args.Skip(1)) info.ArgumentList.Add(arg);
     using var child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("LabLaunchFailed");
-    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(11));
     await child.WaitForExitAsync(deadline.Token); return child.ExitCode;
+}
+
+if (args.Length == 3 && args[0] == "probe-dns")
+{
+    Console.WriteLine(JsonSerializer.Serialize(await UdpProbe.DnsAsync(args[1], CancellationToken.None))); return 0;
+}
+if (args.Length == 3 && args[0] == "probe-stun" && int.TryParse(args[2], out int stunPort))
+{
+    Console.WriteLine(JsonSerializer.Serialize(await UdpProbe.StunAsync(args[1], stunPort, CancellationToken.None))); return 0;
+}
+if (args.Length == 3 && args[0] == "probe-udp-media" && int.TryParse(args[2], out int mediaPort))
+{
+    Console.WriteLine(JsonSerializer.Serialize(await UdpMediaProbe.RunAsync(args[1], mediaPort, CancellationToken.None))); return 0;
+}
+if (args.Length == 2 && args[0] == "docker-udp-relay" && Path.IsPathFullyQualified(args[1]) && !Directory.Exists(args[1]))
+{
+    return await DockerUdpRelayAudit.RunAsync(args[1], CancellationToken.None);
+}
+if (args.Length == 5 && args[0] == "probe-udp-stream" && int.TryParse(args[2], out int streamPort) && int.TryParse(args[3], out int count) && int.TryParse(args[4], out int minimum))
+{
+    Console.WriteLine(JsonSerializer.Serialize(await UdpProbe.StreamAsync(args[1], streamPort, count, minimum, CancellationToken.None))); return 0;
+}
+if (args.Length is 5 or 7 && args[0] == "docker-udp" && args[^1] == "--allow-tun" && Path.IsPathFullyQualified(args[1]) && Path.IsPathFullyQualified(args[3]) && !Directory.Exists(args[3]))
+{
+    int first = 20000, last = 20030;
+    if (args.Length == 7 && (!int.TryParse(args[4], out first) || !int.TryParse(args[5], out last) || first < 1 || last > 65535 || first > last)) return 2;
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+    return await DockerUdpAudit.RunAsync(args[1], args[2], args[3], deadline.Token, first, last);
 }
 
 if (args.Length == 4 && args[0] == "probe-udp" && int.TryParse(args[2], out int udpPort))
@@ -38,7 +66,7 @@ if (args.Length == 4 && args[0] == "probe-udp" && int.TryParse(args[2], out int 
 }
 if (args.Length == 5 && args[0] == "udp-tun" && args[4] == "--allow-tun" && Path.IsPathFullyQualified(args[1]) && Path.IsPathFullyQualified(args[3]) && !Directory.Exists(args[3]))
 {
-    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(10));
     return await UdpTunAudit.RunAsync(args[1], args[2], args[3], deadline.Token);
 }
 

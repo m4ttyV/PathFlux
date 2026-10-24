@@ -4,12 +4,12 @@ namespace PathFlux.NetworkLab;
 
 public static class LabChild
 {
-    public static async Task<ProbeResult> RunAsync(string executable, string[] args, CancellationToken ct)
+    public static async Task<ProbeResult> RunAsync(string executable, string[] args, CancellationToken ct, TimeSpan? timeout = null)
     {
         var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var arg in args) info.ArgumentList.Add(arg);
         using var child = Process.Start(info) ?? throw new InvalidOperationException("ProbeLaunchFailed");
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(12));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(12));
         try
         {
             var stdout = child.StandardOutput.ReadToEndAsync(deadline.Token);

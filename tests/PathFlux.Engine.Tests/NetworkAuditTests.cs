@@ -75,7 +75,8 @@ public sealed class NetworkAuditTests
         var config = new ProxyConfiguration { Profiles = [profile], Rules = [new() { ProfileId = profile.Id }, new() { Priority = 1, Action = RouteAction.Block }] };
         var generator = new SingBoxConfigGenerator(new Secrets());
         string before = await generator.GenerateAsync(config, default);
-        var experimental = JsonNode.Parse(await generator.GenerateExperimentalUdpAsync(config, default))!;
+        await using var bridge = new StrictSocksUdpBridge(new(System.Net.IPAddress.Loopback, 1080));
+        var experimental = JsonNode.Parse(await generator.GenerateExperimentalUdpAsync(config, default, guards: new Dictionary<Guid, StrictSocksUdpBridge> { [profile.Id] = bridge }))!;
         string after = await generator.GenerateAsync(config, default);
         Assert.Equal(before, after);
         var rules = experimental["route"]!["rules"]!.AsArray();
@@ -83,7 +84,18 @@ public sealed class NetworkAuditTests
         Assert.Equal(experimentalAction, (string?)rules[5]!["action"]);
         Assert.Equal("reject", (string?)JsonNode.Parse(after)!["route"]!["rules"]![5]!["action"]);
         if (protocol == ProxyProtocol.Socks5)
-        { Assert.Null(experimental["outbounds"]![1]!["network"]); Assert.Equal("tcp", (string?)JsonNode.Parse(after)!["outbounds"]![1]!["network"]); }
+        { Assert.Equal("tcp", (string?)experimental["outbounds"]![1]!["network"]); Assert.Equal("udp", (string?)experimental["outbounds"]![2]!["network"]); }
+    }
+
+    [Fact]
+    public async Task ExperimentalUdpWithoutALiveGuardStaysRejected()
+    {
+        var profile = new ProxyProfile();
+        var config = new ProxyConfiguration { Profiles = [profile], Rules = [new() { ProfileId = profile.Id }] };
+        var root = JsonNode.Parse(await new SingBoxConfigGenerator(new Secrets()).GenerateExperimentalUdpAsync(config, default))!;
+        Assert.Equal("tcp", (string?)root["outbounds"]![1]!["network"]);
+        Assert.Equal("reject", (string?)root["route"]!["rules"]![3]!["action"]);
+        Assert.DoesNotContain("udp-guard", root.ToJsonString());
     }
 
     [Fact]

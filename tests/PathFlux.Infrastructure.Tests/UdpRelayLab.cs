@@ -52,6 +52,11 @@ public enum UdpRelayFault
 public sealed record Socks5UdpRelayOptions
 {
     public IPEndPoint? TargetOverride { get; init; }
+    public IPAddress? AdvertisedAddress { get; init; }
+    public byte FragmentValue { get; init; } = 1;
+    public int FaultAssociations { get; init; } = int.MaxValue;
+    public int DropEveryNthReply { get; init; }
+    public TimeSpan SessionLifetime { get; init; } = TimeSpan.FromSeconds(30);
     public ProxyCredentials? Credentials { get; init; }
     public byte ReplyCode { get; init; }
     public bool ZeroRelayPort { get; init; }
@@ -112,7 +117,7 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
         using (client)
         using (var lifetime = CancellationTokenSource.CreateLinkedTokenSource(stop))
         {
-            lifetime.CancelAfter(TimeSpan.FromSeconds(30));
+            lifetime.CancelAfter(_options.SessionLifetime);
             var ct = lifetime.Token;
             try
             {
@@ -137,7 +142,8 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                 if (header[0] != 5 || header[1] != 3 || header[2] != 0) return;
                 var associatedClient = await ReadAddressAsync(stream, header[3], ct);
                 ClientEndpoints.Enqueue(associatedClient);
-                Interlocked.Increment(ref _associations);
+                int associationNumber = Interlocked.Increment(ref _associations);
+                var fault = associationNumber <= _options.FaultAssociations ? _options.Fault : UdpRelayFault.None;
                 using var relay = new UdpClient(new IPEndPoint(_address, 0));
                 var relayEndpoint = (IPEndPoint)relay.Client.LocalEndPoint!;
                 byte[] reply;
@@ -151,7 +157,7 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                 {
                     var address = _options.AddressMode == UdpRelayAddressMode.Wildcard
                         ? (_address.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any)
-                        : relayEndpoint.Address;
+                        : _options.AdvertisedAddress ?? relayEndpoint.Address;
                     reply = EncodeEndpoint(address, _options.ZeroRelayPort ? 0 : relayEndpoint.Port, []);
                 }
                 reply[0] = 5; reply[1] = _options.ReplyCode;
@@ -164,7 +170,7 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                 upstream.Connect(_echo.EndPoint);
                 byte[]? previousPayload = null;
                 var relayed = 0;
-                if (_options.Fault == UdpRelayFault.CloseControlBeforeRelay) { client.Close(); return; }
+                if (fault == UdpRelayFault.CloseControlBeforeRelay) { client.Close(); return; }
                 while (!ct.IsCancellationRequested)
                 {
                     var pending = relay.ReceiveAsync(ct).AsTask();
@@ -183,16 +189,17 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                     if (!echoed.RemoteEndPoint.Equals(_echo.EndPoint)) continue;
                     // Construct from the independently received echo address/payload; never replay request headers.
                     var response = EncodeEndpoint(expectedTarget.Address, expectedTarget.Port, echoed.Buffer);
-                    if (_options.Fault == UdpRelayFault.CloseControlBeforeLastReply && relayed >= _options.CloseAfterPackets)
+                    if (_options.DropEveryNthReply > 0 && relayed % _options.DropEveryNthReply == 0) continue;
+                    if (fault == UdpRelayFault.CloseControlBeforeLastReply && relayed >= _options.CloseAfterPackets)
                     { client.Close(); await Task.Delay(30, ct); }
-                    switch (_options.Fault)
+                    switch (fault)
                     {
                         case UdpRelayFault.DropResponses: continue;
                         case UdpRelayFault.WrongPayload: response[^1] ^= 1; break;
                         case UdpRelayFault.WrongTargetAddress: response[4] ^= 1; break;
                         case UdpRelayFault.WrongTargetPort: response[response.Length - echoed.Buffer.Length - 1] ^= 1; break;
                         case UdpRelayFault.NonzeroReserved: response[1] = 1; break;
-                        case UdpRelayFault.Fragmented: response[2] = 1; break;
+                        case UdpRelayFault.Fragmented: response[2] = _options.FragmentValue; break;
                         case UdpRelayFault.Truncated: response = response[..5]; break;
                         case UdpRelayFault.DomainTarget: response[3] = 3; break;
                         case UdpRelayFault.WrongAddressType: response[3] = 9; break;
@@ -209,7 +216,7 @@ public sealed class Socks5UdpRelay : IAsyncDisposable
                     }
                     previousPayload = echoed.Buffer;
                     await relay.SendAsync(response, packet.RemoteEndPoint, ct);
-                    if (_options.Fault == UdpRelayFault.CloseControlBeforeLastReply && relayed >= _options.CloseAfterPackets) return;
+                    if (fault == UdpRelayFault.CloseControlBeforeLastReply && relayed >= _options.CloseAfterPackets) return;
                 }
             }
             catch (Exception ex) when (ex is OperationCanceledException or EndOfStreamException or IOException or SocketException or ObjectDisposedException) { }

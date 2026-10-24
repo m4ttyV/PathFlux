@@ -8,7 +8,7 @@ using System.Text.Json;
 using PathFlux.Engine;
 namespace PathFlux.NetworkLab;
 
-public sealed record ProbeResult(bool Success, string Code);
+public sealed record ProbeResult(bool Success, string Code, int Sent = 0, int Received = 0);
 public sealed record LabCaseResult(string Name, bool Passed, bool SelectedReachedExpectedGateway, bool ControlMatchedExpectation, bool RecoveryConfirmed, Dictionary<string, int>? Counters = null);
 public sealed class LabReport
 {

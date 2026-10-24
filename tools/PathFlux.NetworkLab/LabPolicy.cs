@@ -29,13 +29,16 @@ public static class LabPolicy
         }
         return new() { Profiles = [first, second], Rules = rules };
     }
-    public static async Task<string> GenerateAsync(ProxyConfiguration config, CancellationToken ct, Version? engineVersion = null, bool laboratoryUdp = false)
+    public static async Task<string> GenerateAsync(ProxyConfiguration config, CancellationToken ct, Version? engineVersion = null)
+        => await GenerateGuardedAsync(config, ct, engineVersion, null);
+    internal static async Task<string> GenerateGuardedAsync(ProxyConfiguration config, CancellationToken ct, Version? engineVersion,
+        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards)
     {
         // Use actual domain rule compiler. Only TUN scope is narrowed for this isolated lab.
         var generator = new SingBoxConfigGenerator(new NoSecrets());
-        var root = JsonNode.Parse(laboratoryUdp ? await generator.GenerateExperimentalUdpAsync(config, ct, engineVersion)
+        var root = JsonNode.Parse(guards is not null ? await generator.GenerateExperimentalUdpAsync(config, ct, engineVersion, guards)
             : await generator.GenerateAsync(config, ct, engineVersion: engineVersion))!;
-        if (laboratoryUdp) root["log"]!["level"] = "debug";
+        if (guards is not null) root["log"]!["level"] = "debug";
         root["inbounds"] = new JsonArray(new JsonObject
         {
             ["type"] = "tun", ["tag"] = "tun-in", ["interface_name"] = InterfaceName,
