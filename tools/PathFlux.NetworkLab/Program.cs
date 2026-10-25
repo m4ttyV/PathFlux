@@ -4,6 +4,20 @@ using PathFlux.Engine;
 using PathFlux.Application;
 using PathFlux.Domain;
 
+if (args.Length == 7 && args[0] == "elevate" && args[1] == "browser-tcp" && args[^1] == "--allow-tun")
+{
+    var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+    { UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
+    foreach (var arg in args.Skip(1)) info.ArgumentList.Add(arg);
+    using var child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("LabLaunchFailed");
+    await child.WaitForExitAsync(); return child.ExitCode;
+}
+if (args.Length == 6 && args[0] == "browser-tcp" && args[^1] == "--allow-tun")
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+    return await BrowserTcpAudit.RunAsync(args[1], args[2], args[3], args[4], deadline.Token);
+}
+
 if (args.Length == 4 && args[0] == "probe-voice-wss" && int.TryParse(args[2], out int voicePort))
 {
     var result = await VoiceWebSocketProbe.RunAsync(args[1], voicePort, args[3], CancellationToken.None);
@@ -167,6 +181,7 @@ if ((!live && !prepare) || !Path.IsPathFullyQualified(args[1]) || !Path.IsPathFu
 {
     Console.WriteLine("PathFlux.NetworkLab prepare <absolute sing-box.exe> <SHA-256> <new absolute report directory>");
     Console.WriteLine("PathFlux.NetworkLab run-isolated <absolute sing-box.exe> <SHA-256> <new absolute report directory> --allow-tun");
+    Console.WriteLine("PathFlux.NetworkLab elevate browser-tcp <absolute sing-box.exe> <SHA-256> <new absolute report directory> <absolute chrome.exe> --allow-tun");
     Console.WriteLine("Isolated TUN uses only 198.18.0.1/32; administrator required; Wintun driver may be installed. No default route or UDP acceptance.");
     return 2;
 }
