@@ -1,6 +1,12 @@
 using PathFlux.Domain;
 namespace PathFlux.Application;
 
+public sealed record EngineInstallation(string Path, string Sha256);
+public interface IEngineInstaller
+{
+    Task<EngineInstallation> InstallAsync(CancellationToken ct);
+}
+
 public interface IProxyEngineAdapter
 {
     Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct);
@@ -36,4 +42,8 @@ public interface IProxyDiagnostics
 {
     Task<DiagnosticResult> TestTcpAsync(ProxyProfile profile, string targetHost, int targetPort, CancellationToken ct);
     Task<DiagnosticResult> TestUdpAssociateAsync(ProxyProfile profile, CancellationToken ct);
+}
+public interface IUdpConnectivityDiagnostics
+{
+    Task<DiagnosticResult> TestUdpConnectivityAsync(ProxyProfile profile, CancellationToken ct);
 }

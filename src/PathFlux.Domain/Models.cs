@@ -1,7 +1,7 @@
 namespace PathFlux.Domain;
 
 public enum ProxyProtocol { Socks5, HttpConnect, HttpsConnect }
-public enum UdpRelayMode { Standard, DockerNat }
+public enum UdpRelayMode { Standard, DockerNat, Auto }
 public enum SelectorKind { ProcessName, ExecutablePath, ProcessInstance }
 public enum NetworkTransport { Tcp, Udp, Both }
 public enum RouteAction { Direct, Block, Proxy }

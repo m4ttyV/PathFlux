@@ -8,7 +8,7 @@ using PathFlux.Domain;
 namespace PathFlux.ViewModels;
 
 public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore secrets,
-    IProcessDiscoveryService discovery, IProxyDiagnostics diagnostics, IProxyEngineAdapter engine)
+    IProcessDiscoveryService discovery, IProxyDiagnostics diagnostics, IProxyEngineAdapter engine, IEngineInstaller? engineInstaller = null)
     : ViewModelBase, IAsyncDisposable
 {
     private readonly CancellationTokenSource _lifetime = new();
@@ -26,13 +26,17 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     public ObservableCollection<string> LogEntries { get; } = [];
     public ProxyProtocol[] Protocols { get; } = Enum.GetValues<ProxyProtocol>();
     public SelectorKind[] Selectors => ExperimentalProcessTrees ? [SelectorKind.ProcessName, SelectorKind.ExecutablePath, SelectorKind.ProcessInstance] : [SelectorKind.ProcessName, SelectorKind.ExecutablePath];
+    public string[] SelectorNames => ExperimentalProcessTrees ? ["По имени файла приложения", "По полному пути к приложению", "Конкретный процесс (PID)"] : ["По имени файла приложения", "По полному пути к приложению"];
+    public int RuleSelectorIndex { get => (int)RuleSelector; set { if (value >= 0 && value < Selectors.Length) RuleSelector = (SelectorKind)value; } }
     public NetworkTransport[] Networks { get; } = Enum.GetValues<NetworkTransport>();
     public UdpRelayMode[] UdpRelayModes { get; } = Enum.GetValues<UdpRelayMode>();
-    public string[] UdpRelayModeNames { get; } = ["Standard SOCKS5", "Docker NAT (Explicit Port Mapping)"];
+    public string[] UdpRelayModeNames { get; } = ["Адрес, выданный SOCKS5-сервером", "Docker: указать опубликованные порты", "Автоматически (рекомендуется)"];
     public string[] NetworkNames { get; } = ["TCP", "UDP", "TCP + UDP"];
-    public int ProfileUdpModeIndex { get => (int)ProfileUdpRelayMode; set { if (value is 0 or 1) ProfileUdpRelayMode = (UdpRelayMode)value; } }
+    public int ProfileUdpModeIndex { get => (int)ProfileUdpRelayMode; set { if (value is >= 0 and <= 2) ProfileUdpRelayMode = (UdpRelayMode)value; } }
     public int RuleNetworkIndex { get => (int)RuleNetwork; set { if (value is >= 0 and <= 2) RuleNetwork = (NetworkTransport)value; } }
     public RouteAction[] Actions { get; } = Enum.GetValues<RouteAction>();
+    public string[] ActionNames { get; } = ["Напрямую", "Заблокировать", "Через прокси"];
+    public int RuleActionIndex { get => (int)RuleAction; set { if (value is >= 0 and <= 2) RuleAction = (RouteAction)value; } }
     public string[] ProcessSortOptions { get; } = ["Имя", "PID", "Путь"];
     public string[] Themes { get; } = ["Dark", "Light", "System"];
     public event Action<string>? ThemeChanged;
@@ -50,8 +54,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private ProxyProtocol _profileProtocol = ProxyProtocol.Socks5;
     [ObservableProperty] private string _profileHost = "127.0.0.1";
     [ObservableProperty] private string _profilePort = "1080";
-    [ObservableProperty] private UdpRelayMode _profileUdpRelayMode;
-    [ObservableProperty] private bool _profileUseTlsServerNameForTcp;
+    [ObservableProperty] private UdpRelayMode _profileUdpRelayMode = UdpRelayMode.Auto;
+    [ObservableProperty] private bool _profileUseTlsServerNameForTcp = true;
     [ObservableProperty] private string _profileTcpIpv4DohServer = "https://1.1.1.1/dns-query";
     [ObservableProperty] private string _profileUdpPortFirst = "";
     [ObservableProperty] private string _profileUdpPortLast = "";
@@ -63,12 +67,12 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private bool _removeCredentials;
     [ObservableProperty] private string _credentialStatus = "Авторизация не сохранена.";
     [ObservableProperty] private RoutingRule? _selectedRule;
-    [ObservableProperty] private string _ruleName = "Новое правило";
+    [ObservableProperty] private string _ruleName = "";
     [ObservableProperty] private bool _ruleEnabled = true;
     [ObservableProperty] private bool _ruleIncludeChildren;
     [ObservableProperty] private string _rulePriority = "100";
     [ObservableProperty] private SelectorKind _ruleSelector = SelectorKind.ProcessName;
-    [ObservableProperty] private string _ruleValue = "Discord.exe";
+    [ObservableProperty] private string _ruleValue = "";
     [ObservableProperty] private NetworkTransport _ruleNetwork = NetworkTransport.Tcp;
     [ObservableProperty] private RouteAction _ruleAction = RouteAction.Proxy;
     [ObservableProperty] private ProxyProfile? _ruleProfile;
@@ -88,14 +92,17 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private string _refreshSeconds = "5";
     [ObservableProperty] private bool _experimentalSocksUdp;
     [ObservableProperty] private bool _experimentalProcessTrees;
-    partial void OnExperimentalProcessTreesChanged(bool value) => OnPropertyChanged(nameof(Selectors));
+    partial void OnExperimentalProcessTreesChanged(bool value) { OnPropertyChanged(nameof(Selectors)); OnPropertyChanged(nameof(SelectorNames)); }
     [ObservableProperty] private string _liveUdpText = "UDP-посредники не запущены.";
     [ObservableProperty] private bool _isRecordingUdp;
     [ObservableProperty] private string _udpRecordingPath = "";
     private int _udpRecordedSamples;
     public bool IsSocks => ProfileProtocol == ProxyProtocol.Socks5;
+    public bool ShowTcpIpv4Settings => IsSocks && ProfileUseTlsServerNameForTcp;
+    partial void OnProfileUseTlsServerNameForTcpChanged(bool value) => OnPropertyChanged(nameof(ShowTcpIpv4Settings));
     public bool IsDockerNat => IsSocks && ProfileUdpRelayMode == UdpRelayMode.DockerNat;
-    partial void OnProfileUdpRelayModeChanged(UdpRelayMode value) { OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpModeIndex)); }
+    public string ProfileUdpModeSummary => UdpRelayModeNames[(int)ProfileUdpRelayMode];
+    partial void OnProfileUdpRelayModeChanged(UdpRelayMode value) { OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpModeIndex)); OnPropertyChanged(nameof(ProfileUdpModeSummary)); }
     partial void OnRuleNetworkChanged(NetworkTransport value) => OnPropertyChanged(nameof(RuleNetworkIndex));
 
     // Failed can still mean that network cleanup has not finished. Require Stop before editing.
@@ -106,6 +113,13 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     public bool CanUseTools => IsInitialized && !IsBusy;
     public bool IsHttps => ProfileProtocol == ProxyProtocol.HttpsConnect;
     public bool IsProxyAction => RuleAction == RouteAction.Proxy;
+    public string RuleValuePlaceholder => RuleSelector switch
+    {
+        SelectorKind.ExecutablePath => "Полный путь к файлу приложения — удобнее выбрать во вкладке «Процессы»",
+        SelectorKind.ProcessInstance => "Выберите главный процесс во вкладке «Процессы» и создайте дерево PID",
+        _ => "Имя исполняемого файла приложения с расширением .exe"
+    };
+    partial void OnRuleSelectorChanged(SelectorKind value) { OnPropertyChanged(nameof(RuleValuePlaceholder)); OnPropertyChanged(nameof(RuleSelectorIndex)); }
     public string ProfileCount => Profiles.Count.ToString();
     public string RuleCount => Rules.Count.ToString();
     public string ProfileUdpStatus => SelectedProfile is { } profile
@@ -119,14 +133,14 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     partial void OnIsBusyChanged(bool value) => NotifyPermissions();
     partial void OnIsInitializedChanged(bool value) => NotifyPermissions();
     partial void OnProfileProtocolChanged(ProxyProtocol value)
-    { OnPropertyChanged(nameof(IsHttps)); OnPropertyChanged(nameof(IsSocks)); OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpStatus)); }
+    { OnPropertyChanged(nameof(IsHttps)); OnPropertyChanged(nameof(IsSocks)); OnPropertyChanged(nameof(IsDockerNat)); OnPropertyChanged(nameof(ProfileUdpStatus)); OnPropertyChanged(nameof(ShowTcpIpv4Settings)); }
     partial void OnProfileHostChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnProfilePortChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnProfileTlsServerNameChanged(string value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnReplaceCredentialsChanged(bool value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnRemoveCredentialsChanged(bool value) => OnPropertyChanged(nameof(ProfileUdpStatus));
     partial void OnDiagnosticProfileChanged(ProxyProfile? value) => OnPropertyChanged(nameof(DiagnosticUdpStatus));
-    partial void OnRuleActionChanged(RouteAction value) => OnPropertyChanged(nameof(IsProxyAction));
+    partial void OnRuleActionChanged(RouteAction value) { OnPropertyChanged(nameof(IsProxyAction)); OnPropertyChanged(nameof(RuleActionIndex)); }
     partial void OnProcessSearchChanged(string value) => FilterProcesses();
     partial void OnProcessSortChanged(string value) => FilterProcesses();
 
@@ -169,7 +183,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             RefreshSeconds = _configuration.Settings.ProcessRefreshSeconds.ToString();
             ThemeChanged?.Invoke(SelectedTheme);
             var c = await engine.GetCapabilitiesAsync(ct);
-            CapabilityText = $"Имя EXE: {c.ProcessName} · путь EXE: {c.ExecutablePath}\nTCP через TUN: {c.Tcp} · UDP через TUN: {c.Udp}\nТочный PID: {c.ExactPid} · дочерние процессы: {c.Children}\nСистемный kill switch: {c.KillSwitch}";
+            CapabilityText = $"Правила по имени: {CapabilityLabel(c.ProcessName)} · по пути: {CapabilityLabel(c.ExecutablePath)}\nTCP: {CapabilityLabel(c.Tcp)} · UDP: {CapabilityLabel(c.Udp)} (SOCKS5, включается в настройках)\nДочерние процессы: Experimental, только TCP\nСистемный kill switch: {CapabilityLabel(c.KillSwitch)}. DNS: системный.";
             await RefreshProcessesCoreAsync(ct);
             await UpdateStatusAsync(ct);
             IsInitialized = true;
@@ -183,7 +197,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!CanEdit) return;
         SelectedProfile = null; ProfileName = "Новый прокси"; ProfileProtocol = ProxyProtocol.Socks5;
         ProfileHost = "127.0.0.1"; ProfilePort = "1080"; ProfileEnabled = true; ProfileTlsServerName = "";
-        ProfileUdpRelayMode = UdpRelayMode.Standard; ProfileUdpPortFirst = ""; ProfileUdpPortLast = ""; ProfileUseTlsServerNameForTcp = false; ProfileTcpIpv4DohServer = "https://1.1.1.1/dns-query";
+        ProfileUdpRelayMode = UdpRelayMode.Auto; ProfileUdpPortFirst = ""; ProfileUdpPortLast = ""; ProfileUseTlsServerNameForTcp = true; ProfileTcpIpv4DohServer = "https://1.1.1.1/dns-query";
         ClearCredentialEditor(); CredentialStatus = "Авторизация не сохранена.";
     }
     [RelayCommand] private Task SaveProfileAsync() => RunAsync(async ct =>
@@ -245,8 +259,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [RelayCommand] private void NewRule()
     {
         if (!CanEdit) return;
-        SelectedRule = null; RuleName = "Новое правило"; RuleEnabled = true; RulePriority = "100";
-        RuleSelector = SelectorKind.ProcessName; RuleValue = "Discord.exe"; RuleNetwork = NetworkTransport.Tcp;
+        SelectedRule = null; RuleName = ""; RuleEnabled = true; RulePriority = "100";
+        RuleSelector = SelectorKind.ProcessName; RuleValue = ""; RuleNetwork = NetworkTransport.Tcp;
         RuleIncludeChildren = false;
         RuleAction = RouteAction.Proxy; RuleProfile = Profiles.FirstOrDefault();
     }
@@ -255,7 +269,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         RequireStopped();
         if (!int.TryParse(RulePriority, out var priority)) throw new EditorValidationException("Приоритет должен быть целым числом.");
         if (string.IsNullOrWhiteSpace(RuleName) || string.IsNullOrWhiteSpace(RuleValue))
-            throw new EditorValidationException("Укажите название и значение селектора.");
+            throw new EditorValidationException("Назовите правило и укажите приложение. Его можно выбрать во вкладке «Процессы».");
         if (RuleSelector == SelectorKind.ProcessInstance && (!ExperimentalProcessTrees || SelectedRule?.Selector.Instance is null))
             throw new EditorValidationException("Сначала сохраните настройку backend дерева PID и создайте правило из списка процессов.");
         if (RuleAction == RouteAction.Proxy && RuleProfile is null) throw new EditorValidationException("Выберите прокси-профиль.");
@@ -345,9 +359,10 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [RelayCommand] private Task TestUdpAsync() => RunAsync(async ct =>
     {
         var p = DiagnosticProfile ?? throw new EditorValidationException("Выберите профиль для диагностики.");
-        var r = await diagnostics.TestUdpAssociateAsync(p, ct);
-        DiagnosticText = $"UDP · {DateTime.Now:HH:mm:ss}\n{r.Stage}: {r.Message}\nСтатус: {r.Udp}. Ответ UDP ASSOCIATE не доказывает передачу UDP через TUN.";
-        AddLog("UDP-диагностика завершена; фактическая передача требует отдельной проверки.");
+        var r = diagnostics is IUdpConnectivityDiagnostics connectivity ? await connectivity.TestUdpConnectivityAsync(p, ct)
+            : await diagnostics.TestUdpAssociateAsync(p, ct);
+        DiagnosticText = $"UDP · {DateTime.Now:HH:mm:ss}\n{r.Stage}: {r.Message}\nТест не включает UDP в правилах и не меняет системный DNS.";
+        AddLog(r.Success ? "UDP-проверка завершена. Маршрут приложения проверяется отдельно." : "UDP-проверка не пройдена. Подробности в диагностике.");
     });
     [RelayCommand] private Task TestUdpEchoAsync() => RunAsync(async ct =>
     {
@@ -373,12 +388,27 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         { Profiles = _configuration.Profiles.Select(p => p.Id == profile.Id ? p with { UdpVerification = result.Evidence } : p).ToList() };
         try { await PersistAsync(next, ct); }
         catch { DiagnosticText = details + "\nНе удалось сохранить результат. Исторический статус профиля не изменён."; throw; }
-        DiagnosticText = details + "\nРезультат сохранён локально. Echo не включает экспериментальный UDP автоматически.";
+        DiagnosticText = details + "\nРезультат сохранён локально. Echo не включает UDP в правилах автоматически.";
         Notice = result.Success ? "UDP echo завершён. Подтверждён только relay к указанной цели; TUN и Discord voice не проверены."
             : "UDP echo не подтвердил передачу. Результат диагностики сохранён; скрытого Direct fallback нет.";
         AddLog(result.Success ? "UDP echo: результат сохранён; TUN и Discord voice не проверены."
             : "UDP echo: передача не подтверждена; результат сохранён.");
     }, true);
+    [RelayCommand] private Task InstallEngineAsync() => RunAsync(async ct =>
+    {
+        RequireStopped();
+        if (engineInstaller is null) throw new EditorValidationException("В этой сборке установка движка недоступна.");
+        Notice = "Установка и проверка движка PathFlux…";
+        EngineInstallation installed;
+        try { installed = await engineInstaller.InstallAsync(ct); }
+        catch (InvalidOperationException ex) { throw new EditorValidationException(ex.Message); }
+        var settings = _configuration.Settings with { EnginePath = installed.Path, EngineSha256 = installed.Sha256 };
+        await PersistAsync(_configuration with { Settings = settings }, ct);
+        EnginePath = installed.Path; EngineSha256 = installed.Sha256;
+        Notice = "Движок установлен. Путь и SHA-256 заполнены и сохранены. Для обычных правил режим дерева PID включать не нужно.";
+        AddLog("Проверенный движок PathFlux установлен; настройки сохранены.");
+    }, true);
+
     [RelayCommand] private Task SaveSettingsAsync() => RunAsync(async ct =>
     {
         RequireStopped();
@@ -395,6 +425,12 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         var validation = ConfigurationValidator.Validate(config);
         if (!validation.IsValid) throw new EditorValidationException(string.Join("\n", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
     }
+    private static string CapabilityLabel(SupportStatus status) => status switch
+    {
+        SupportStatus.Implemented => "доступно", SupportStatus.Partial => "с ограничениями",
+        SupportStatus.Experimental => "требуется проверка совместимости", SupportStatus.Unsupported => "недоступно",
+        SupportStatus.Failed => "ошибка", _ => "не проверено"
+    };
     private async Task PersistAsync(ProxyConfiguration next, CancellationToken ct)
     { ValidateLocal(next); await store.SaveAsync(next, ct); _configuration = next; LoadCollections(); }
     private void LoadCollections()

@@ -20,7 +20,7 @@ internal sealed class AgentUdpBridges : IAsyncDisposable
             var usedUdp = config.Settings.ExperimentalSocksUdp ? config.Rules.Where(ExperimentalUdpPolicy.UsesUdp).Select(r => r.ProfileId).ToHashSet() : [];
             if (usedUdp.Count == 0 && !config.Profiles.Any(p => p.UseTlsServerNameForTcp && usedTcp.Contains(p.Id))) return owner;
             var validation = ConfigurationValidator.Validate(config);
-            if (!validation.IsValid) throw new InvalidOperationException("Конфигурация экспериментального UDP несовместима.");
+            if (!validation.IsValid) throw new InvalidOperationException("Параметры UDP несовместимы.");
             foreach (var profile in config.Profiles.Where(p => usedUdp.Contains(p.Id) || p.UseTlsServerNameForTcp && usedTcp.Contains(p.Id)))
             {
                 ct.ThrowIfCancellationRequested();
@@ -31,7 +31,8 @@ internal sealed class AgentUdpBridges : IAsyncDisposable
                 if (address is null || !ExperimentalUdpPolicy.IsUnicast(address)) throw new InvalidOperationException("Не удалось определить допустимый IP SOCKS5 для UDP.");
                 var credentials = profile.CredentialsRef is { } reference ? await secrets.GetAsync(reference, ct)
                     ?? throw new InvalidOperationException("Не найдены учётные данные SOCKS5.") : null;
-                var binding = profile.UdpRelayMode == UdpRelayMode.DockerNat ? new UdpRelayBinding(profile.UdpPublishedPortFirst, profile.UdpPublishedPortLast) : new();
+                var binding = profile.UdpRelayMode == UdpRelayMode.DockerNat ? new UdpRelayBinding(profile.UdpPublishedPortFirst, profile.UdpPublishedPortLast)
+                    : profile.UdpRelayMode == UdpRelayMode.Auto ? new UdpRelayBinding(AutomaticProfile: profile) : new();
                 if (usedUdp.Contains(profile.Id)) owner.Bridges.Add(profile.Id, new(new(address, profile.Port), binding, credentials));
                 if (usedTcp.Contains(profile.Id) && profile.UseTlsServerNameForTcp) owner.TcpBridges.Add(profile.Id, new(new(address, profile.Port), credentials, profile.TcpIpv4DohServer));
             }

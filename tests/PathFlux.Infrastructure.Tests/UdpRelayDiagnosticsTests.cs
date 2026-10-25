@@ -9,6 +9,16 @@ namespace PathFlux.Infrastructure.Tests;
 
 public sealed class UdpRelayDiagnosticsTests
 {
+    [Fact]
+    public async Task AutomaticModeVerifiesRealEchoWithoutManualPortRange()
+    {
+        await using var echo = new UdpEchoServer();
+        await using var relay = new Socks5UdpRelay(echo);
+        var result = await Diagnostics().TestUdpRelayAsync(relay.Profile with { UdpRelayMode = UdpRelayMode.Auto }, Options(echo), default);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(3, echo.ReceivedPackets);
+        Assert.All(relay.ClientEndpoints, endpoint => Assert.Equal(new(IPAddress.Any, 0), endpoint));
+    }
     [Theory]
     [InlineData(true)] [InlineData(false)]
     public async Task DockerNatProbeUsesDynamicPublishedPortAndRejectsAnUnpublishedRelay(bool permitted)

@@ -36,7 +36,8 @@ public partial class App : Avalonia.Application
             var adapter = new SingBoxEngineAdapter(secretStore);
             IProxyEngineAdapter uiAdapter = smokeTest ? new SmokeEngineAdapter(adapter) : adapter;
             var viewModel = new MainWindowViewModel(store,
-                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), uiAdapter);
+                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), uiAdapter,
+                smokeTest || acceptance is not null ? null : new BundledEngineInstaller(Path.Combine(AppContext.BaseDirectory, "engine-package"), Path.Combine(dataDirectory, "engines")));
             viewModel.ThemeChanged += theme => RequestedThemeVariant = theme switch
                 { "Light" => ThemeVariant.Light, "System" => ThemeVariant.Default, _ => ThemeVariant.Dark };
             var window = new MainWindow { DataContext = viewModel };
@@ -75,6 +76,11 @@ public partial class App : Avalonia.Application
                     if (smokeTest)
                     {
                         var args = desktop.Args ?? [];
+                        if (args.Contains("--install-engine-smoke"))
+                        {
+                            var installation = await new BundledEngineInstaller(Path.Combine(AppContext.BaseDirectory, "engine-package"), Path.Combine(dataDirectory, "engines")).InstallAsync(default);
+                            await EngineBinary.VerifyAsync(installation.Path, installation.Sha256, default);
+                        }
                         var snapshotFlag = Array.IndexOf(args, "--snapshot-dir");
                         var snapshots = snapshotFlag >= 0 && snapshotFlag + 1 < args.Length ? args[snapshotFlag + 1] : null;
                         if (snapshots is not null)
@@ -91,6 +97,7 @@ public partial class App : Avalonia.Application
                             for (var index = 0; index < tabs.Length; index++)
                             {
                                 viewModel.SelectedTab = index;
+                                if (index == 2) viewModel.NewRuleCommand.Execute(null);
                                 await Task.Delay(200); // Allow native layout and each data template to render.
                                 if (snapshots is null) continue;
                                 var scale = window.RenderScaling;
@@ -98,6 +105,16 @@ public partial class App : Avalonia.Application
                                 using var bitmap = new RenderTargetBitmap(size, new Vector(96 * scale, 96 * scale));
                                 bitmap.Render(window);
                                 bitmap.Save(Path.Combine(snapshots, $"{theme.ToLowerInvariant()}-{index}-{tabs[index]}.png"));
+                            }
+                            if (snapshots is not null)
+                            {
+                                var guide = window.ShowGuide();
+                                await Task.Delay(200);
+                                var scale = guide.RenderScaling;
+                                using var bitmap = new RenderTargetBitmap(new PixelSize((int)Math.Ceiling(guide.Bounds.Width * scale), (int)Math.Ceiling(guide.Bounds.Height * scale)), new Vector(96 * scale, 96 * scale));
+                                bitmap.Render(guide);
+                                bitmap.Save(Path.Combine(snapshots, $"{theme.ToLowerInvariant()}-guide.png"));
+                                guide.Close();
                             }
                         }
                         Environment.ExitCode = viewModel.IsInitialized ? 0 : 2;

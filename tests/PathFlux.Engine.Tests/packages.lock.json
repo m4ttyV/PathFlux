@@ -111,7 +111,8 @@
       "pathflux.engine": {
         "type": "Project",
         "dependencies": {
-          "PathFlux.Application": "[1.0.0, )"
+          "PathFlux.Application": "[1.0.0, )",
+          "PathFlux.Infrastructure": "[1.0.0, )"
         }
       },
       "pathflux.infrastructure": {

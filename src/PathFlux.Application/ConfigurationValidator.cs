@@ -38,7 +38,7 @@ public static class ConfigurationValidator
                 issues.Add(new("dns.unsupported", "В этой версии доступен только режим System DNS; защищённый DNS-маршрут не подтверждён."));
             if (configuration.Settings.ExperimentalSocksUdp)
             {
-                if (configuration.SchemaVersion != 2) issues.Add(new("udp.schema", "Экспериментальный UDP требует схемы 2."));
+                if (configuration.SchemaVersion != 2) issues.Add(new("udp.schema", "UDP требует схемы 2."));
                 foreach (var rule in configuration.Rules?.Where(r => r is not null && ExperimentalUdpPolicy.UsesUdp(r)) ?? [])
                 {
                     var profile = configuration.Profiles?.FirstOrDefault(p => p?.Id == rule.ProfileId);
@@ -46,7 +46,7 @@ public static class ConfigurationValidator
                         issues.Add(new("udp.incompatible", reason, rule.Id));
                 }
                 issues.RemoveAll(i => i.Code == "udp.unverified");
-                issues.Add(new("udp.experimental", "Экспериментальный UDP включён вручную. Стабильность Discord и отсутствие DNS-утечек не подтверждены.", IsWarning: true));
+                issues.Add(new("udp.experimental", "UDP через SOCKS5 включён. Проверьте совместимость вашего сервера и приложения; DNS остаётся системным.", IsWarning: true));
             }
         }
         return new(issues);

@@ -8,8 +8,10 @@ using PathFlux.Domain;
 namespace PathFlux.Engine;
 
 // Experimental transport; only the agent owns production instances.
-internal sealed record UdpRelayBinding(int? DockerPortFirst = null, int? DockerPortLast = null)
+internal sealed record UdpRelayBinding(int? DockerPortFirst = null, int? DockerPortLast = null, ProxyProfile? AutomaticProfile = null)
 {
+    public Task<IPEndPoint> ResolveAsync(IPEndPoint tcpPeer, IPEndPoint advertised, CancellationToken ct) => AutomaticProfile is { } profile
+        ? PathFlux.Infrastructure.AutomaticUdpRelay.ResolveAsync(profile, tcpPeer, advertised, ct) : Task.FromResult(Resolve(tcpPeer, advertised));
     public IPEndPoint Resolve(IPEndPoint tcpPeer, IPEndPoint advertised)
     {
         if (advertised.Port == 0) throw new IOException("ZeroUdpRelayPort");
@@ -109,6 +111,7 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
             SocketException => "SOCKS5 или UDP-релей недоступен; пакеты не отправляются напрямую.",
             IOException when ex.Message == "UnpublishedDockerUdpPort" => "Dante вернул порт вне разрешённого диапазона Docker NAT.",
             IOException when ex.Message == "ZeroUdpRelayPort" => "SOCKS5 вернул нулевой UDP-порт.",
+            IOException when ex.Message == "UdpDockerDiscoveryRequired" => "Не удалось определить UDP-порты локального Docker. Откройте дополнительные настройки профиля и укажите опубликованный диапазон. Direct fallback отключён.",
             IOException when ex.Message == "LiteralUdpEndpointRequired" => "SOCKS5 вернул доменное имя релея; поддерживается только буквальный IP.",
             IOException when ex.Message == "SocksAuthenticationRejected" => "SOCKS5 отклонил авторизацию UDP-ассоциации.",
             IOException when ex.Message == "UdpAssociateRejected" => "SOCKS5 отклонил UDP ASSOCIATE.",
@@ -202,7 +205,7 @@ internal sealed class StrictSocksUdpBridge : IAsyncDisposable
             if (header[0] != 5 || header[1] != 0 || header[2] != 0) throw new IOException("UdpAssociateRejected");
             var advertised = await ReadEndpointAsync(stream, header[3], ct);
             LastAdvertisedRelay = advertised;
-            var endpoint = _binding.Resolve((IPEndPoint)tcp.Client.RemoteEndPoint!, advertised);
+            var endpoint = await _binding.ResolveAsync((IPEndPoint)tcp.Client.RemoteEndPoint!, advertised, ct);
             LastEffectiveRelay = endpoint;
             var udp = new UdpClient(endpoint.AddressFamily);
             udp.Client.ReceiveBufferSize = 256 * 1024;

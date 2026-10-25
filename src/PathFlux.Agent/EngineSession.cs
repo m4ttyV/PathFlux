@@ -37,7 +37,7 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
         ? new(EngineState.Failed, "Движок аварийно завершился. Проверьте сеть; системный kill switch отсутствует.", Udp: udpBridges?.Snapshot() ?? lastUdp)
         : new(state, (state == EngineState.Failed ? failureMessage : state == EngineState.Degraded
             ? processTreesActive ? "TUN запущен. Дерево PID: TCP Experimental; TCP-правило не охватывает UDP, DNS системный."
-                : udpBridges?.Bridges.Count > 0 ? "TUN запущен. UDP Experimental: проверяйте статистику; Discord не принят, DNS системный, kill switch отсутствует."
+                : udpBridges?.Bridges.Count > 0 ? "TUN запущен. TCP и UDP направляются по правилам. Состояние UDP доступно в диагностике; DNS системный, kill switch отсутствует."
                 : "TUN запущен. Выборочный TCP доступен с ограничениями; UDP заблокирован, DNS системный."
             : stoppedMessage) + (udpBridges?.TcpBridges.Count > 0 ? " " + string.Join(" ", udpBridges.TcpBridges.Values.Select(b => b.Diagnostic)) : ""), engine?.Id, udpBridges?.Snapshot() ?? lastUdp);
 

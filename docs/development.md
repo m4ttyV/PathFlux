@@ -12,7 +12,11 @@ dotnet run --project PathFlux/PathFlux.csproj -c Release --no-build
 
 Для среды с ограниченным MSBuild worker-процессом: `dotnet build PathFlux.slnx -c Release --no-restore -m:1 -nr:false -p:UseSharedCompilation=false`. В данной sandbox-среде VSTest зависал на запуске IPC; повторный прогон вне sandbox работает. Это ограничение среды, не успешный тест. GitHub Actions настроен на обычный Windows runner; облачный CI в этой сессии не запускался.
 
-Сборка помещает сетевой агент в `PathFlux/bin/Release/net10.0/agent/`. Publish-скрипт публикует приложение и агента раздельно, затем собирает portable-папку `artifacts/win-x64`. Не перемещать только UI EXE: нужны зависимости и каталог agent. Runtime framework-dependent .NET 10 x64; движок отдельно.
+Сборка помещает сетевой агент в `PathFlux/bin/Release/net10.0/agent/`. Publish-скрипт публикует приложение и агента раздельно, затем собирает portable-папку `artifacts/win-x64`. Не перемещать только UI EXE: нужны зависимости, каталог agent и engine-package. Runtime framework-dependent .NET 10 x64.
+
+Перед publish `scripts/prepare-bundled-engine.ps1` готовит закреплённую сборку backend. При отсутствии готового результата скачиваются официальные source ZIP sing-box 1.14.3 и Go 1.25.5 Windows amd64, проверяются SHA-256, применяются локальные изменения, выполняются Go-тесты и сборка. Результирующий бинарник должен совпасть с SHA-256, закреплённым в установщике. Готовый корректный результат используется повторно. `scripts/package-engine.ps1` добавляет полные изменённые исходники ZIP, лицензию и manifest. Конечному пользователю Go и интернет для установки движка не нужны.
+
+Для разработки с кнопкой установки сначала выполнить `./scripts/prepare-bundled-engine.ps1` и `./scripts/package-engine.ps1`, затем собрать UI. Если пакет отсутствует, UI собирается, но установка выдаёт понятное сообщение. Полный publish без проверенного пакета отклоняется. Overlay сохраняется с LF через .gitattributes для воспроизводимости на Windows и CI.
 
 ## Дополнительная проверка официального движка
 

@@ -144,8 +144,8 @@ public sealed partial class WorkflowTests
     }
 
     private static MainWindowViewModel Create(IConfigurationStore store, MemorySecrets secrets, FakeEngine? engine = null,
-        IReadOnlyList<ProcessInfo>? processes = null, IProxyDiagnostics? diagnostics = null) => new(store, secrets,
-            new FakeProcesses(processes ?? []), diagnostics ?? new FakeDiagnostics(), engine ?? new());
+        IReadOnlyList<ProcessInfo>? processes = null, IProxyDiagnostics? diagnostics = null, IEngineInstaller? installer = null) => new(store, secrets,
+            new FakeProcesses(processes ?? []), diagnostics ?? new FakeDiagnostics(), engine ?? new(), installer);
 
     private sealed class MemoryStore(ProxyConfiguration configuration) : IConfigurationStore
     {

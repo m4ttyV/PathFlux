@@ -19,6 +19,7 @@ public sealed partial class WorkflowTests
         var profile = Assert.Single(store.Configuration.Profiles);
         Assert.Equal(UdpRelayMode.DockerNat, profile.UdpRelayMode); Assert.Equal(20000, profile.UdpPublishedPortFirst);
         Assert.True(profile.UseTlsServerNameForTcp); Assert.True(vm.ProfileUseTlsServerNameForTcp);
+        vm.RuleName = "Голос приложения"; vm.RuleValue = "voice-client.exe";
         vm.RuleProfile = vm.Profiles.Single(); vm.RuleNetwork = NetworkTransport.Udp;
         await vm.SaveRuleCommand.ExecuteAsync(null);
         Assert.Equal(NetworkTransport.Udp, Assert.Single(store.Configuration.Rules).Network);
@@ -33,6 +34,7 @@ public sealed partial class WorkflowTests
         vm.ProfileProtocol = ProxyProtocol.HttpConnect; await vm.SaveProfileCommand.ExecuteAsync(null);
         Assert.Single(store.Configuration.Profiles);
         vm.ExperimentalSocksUdp = true; await vm.SaveSettingsCommand.ExecuteAsync(null);
+        vm.RuleName = "Голос приложения"; vm.RuleValue = "voice-client.exe";
         vm.RuleProfile = vm.Profiles.Single(); vm.RuleNetwork = NetworkTransport.Udp;
         await vm.SaveRuleCommand.ExecuteAsync(null);
         Assert.Empty(store.Configuration.Rules); Assert.Contains("HTTP/HTTPS", vm.Notice);

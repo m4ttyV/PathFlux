@@ -11,7 +11,7 @@ using PathFlux.Domain;
 namespace PathFlux.Infrastructure;
 
 /// <summary>Active proxy handshakes. A successful CONNECT proves a tunnel was accepted, not application traffic interception.</summary>
-public sealed partial class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = null) : IProxyDiagnostics, IUdpRelayDiagnostics
+public sealed partial class ProxyDiagnostics(ISecretStore secrets, TimeSpan? timeout = null) : IProxyDiagnostics, IUdpRelayDiagnostics, IUdpConnectivityDiagnostics
 {
     private readonly TimeSpan _timeout = timeout ?? TimeSpan.FromSeconds(15);
 

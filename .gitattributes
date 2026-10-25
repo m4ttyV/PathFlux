@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# The engine installer pins a reproducible binary; keep overlay bytes identical on Windows/CI.
+backends/process-tree/** text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

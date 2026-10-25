@@ -9,6 +9,19 @@ public partial class MainWindow : Window
     private bool _closing;
     private bool _closed;
     private TrayIcon? _tray;
+    private GuideWindow? _guide;
+    private void OpenGuide(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => ShowGuide();
+    public GuideWindow ShowGuide()
+    {
+        if (_guide is null)
+        {
+            _guide = new GuideWindow();
+            _guide.Closed += (_, _) => _guide = null;
+            _guide.Show(this);
+        }
+        _guide.Activate();
+        return _guide;
+    }
     public bool ExitConfirmed => _closed;
     public MainWindow()
     {

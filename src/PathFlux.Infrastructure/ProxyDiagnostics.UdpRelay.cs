@@ -66,7 +66,7 @@ public sealed partial class ProxyDiagnostics
             stage = "authentication";
             await AuthenticateSocksAsync(stream, credentials, lifetime.Token).ConfigureAwait(false);
             stage = "udp-associate";
-            var relay = await AssociateRelayAsync(stream, profile.UdpRelayMode == UdpRelayMode.DockerNat ? new(IPAddress.Any, 0) : udpLocal,
+            var relay = await AssociateRelayAsync(stream, profile.UdpRelayMode is UdpRelayMode.DockerNat or UdpRelayMode.Auto ? new(IPAddress.Any, 0) : udpLocal,
                 remote.Address, profile, lifetime.Token).ConfigureAwait(false);
             if (relay.AddressFamily != udpLocal.AddressFamily)
                 throw new ProbeException(stage, "Семейство адреса UDP relay несовместимо с TCP-ассоциацией.");
@@ -169,6 +169,11 @@ public sealed partial class ProxyDiagnostics
         await stream.ReadExactlyAsync(port, ct).ConfigureAwait(false);
         var relayPort = (port[0] << 8) | port[1];
         if (relayPort == 0) throw new ProbeException("udp-associate", "Прокси вернул нулевой порт UDP relay.");
+        if (profile.UdpRelayMode == UdpRelayMode.Auto)
+        {
+            try { return await AutomaticUdpRelay.ResolveAsync(profile, new(tcpRemote, profile.Port), new(relayAddress, relayPort), ct); }
+            catch (IOException) { throw new ProbeException("udp-associate", "Не удалось автоматически определить UDP-релей. Для локального Docker проверьте публикацию портов и доступ к Docker Desktop либо задайте диапазон в дополнительных настройках профиля."); }
+        }
         if (profile.UdpRelayMode == UdpRelayMode.DockerNat)
         {
             if (!tcpRemote.Equals(IPAddress.Loopback) || relayPort < profile.UdpPublishedPortFirst || relayPort > profile.UdpPublishedPortLast)

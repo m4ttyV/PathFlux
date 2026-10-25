@@ -38,7 +38,7 @@ public sealed partial class WorkflowTests
         Assert.Contains("Отправлено: 3; получено точных ответов: 3", vm.DiagnosticText);
         Assert.Contains("Средний RTT", vm.DiagnosticText);
         Assert.Contains("TUN, DNS и Discord voice не проверены", vm.DiagnosticText);
-        Assert.Contains("не включает экспериментальный UDP автоматически", vm.DiagnosticText);
+        Assert.Contains("не включает UDP в правилах автоматически", vm.DiagnosticText);
         Assert.False(store.Configuration.Settings.ExperimentalSocksUdp);
         Assert.Contains("15 минут", vm.DiagnosticUdpStatus);
         Assert.Equal(1, store.SaveCalls);

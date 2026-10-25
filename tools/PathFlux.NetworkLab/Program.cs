@@ -118,6 +118,11 @@ if (args.Length == 2 && args[0] == "docker-udp-relay" && Path.IsPathFullyQualifi
 {
     return await DockerUdpRelayAudit.RunAsync(args[1], CancellationToken.None);
 }
+if (args.Length == 2 && args[0] == "docker-udp-auto" && Path.IsPathFullyQualified(args[1]) && !Directory.Exists(args[1]))
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+    return await DockerUdpRelayAudit.RunAsync(args[1], deadline.Token, automatic: true);
+}
 if (args.Length == 5 && args[0] == "probe-udp-stream" && int.TryParse(args[2], out int streamPort) && int.TryParse(args[3], out int count) && int.TryParse(args[4], out int minimum))
 {
     Console.WriteLine(JsonSerializer.Serialize(await UdpProbe.StreamAsync(args[1], streamPort, count, minimum, CancellationToken.None))); return 0;

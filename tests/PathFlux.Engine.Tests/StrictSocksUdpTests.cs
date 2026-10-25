@@ -12,6 +12,19 @@ namespace PathFlux.Engine.Tests;
 public class StrictSocksUdpTests
 {
     [Fact]
+    public async Task AutomaticModeCarriesRealDatagramsWithoutManualPorts()
+    {
+        await using var echo = new UdpEchoServer();
+        await using var relay = new Socks5UdpRelay(echo);
+        await using var bridge = new StrictSocksUdpBridge(new(IPAddress.Loopback, relay.Port), new(AutomaticProfile: relay.Profile with { UdpRelayMode = UdpRelayMode.Auto }));
+        await using var client = await Client.OpenAsync(bridge);
+        var packet = StrictSocksUdpBridge.Encode(echo.EndPoint, RandomNumberGenerator.GetBytes(64));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await client.Udp.SendAsync(packet, deadline.Token);
+        Assert.Equal(packet, (await client.Udp.ReceiveAsync(deadline.Token)).Buffer);
+        Assert.Equal(1, echo.ReceivedPackets);
+    }
+    [Fact]
     public void EveryNonzeroFragmentValueIsRejectedForBothIpFamilies()
     {
         foreach (var address in new[] { IPAddress.Loopback, IPAddress.IPv6Loopback })
@@ -78,14 +91,16 @@ public class StrictSocksUdpTests
     }
 
     [Theory]
-    [InlineData(UdpRelayFault.None, true)] [InlineData(UdpRelayFault.Fragmented, false)]
-    [InlineData(UdpRelayFault.NonzeroReserved, false)] [InlineData(UdpRelayFault.Truncated, false)]
-    [InlineData(UdpRelayFault.WrongTargetPort, false)] [InlineData(UdpRelayFault.WrongTargetAddress, false)]
-    [InlineData(UdpRelayFault.WrongOuterSource, false)] [InlineData(UdpRelayFault.DropResponses, false)]
-    public async Task BridgeValidatesRealRelayRepliesWithoutDirectFallback(UdpRelayFault fault, bool expected)
+    [InlineData(UdpRelayFault.None, true, false)] [InlineData(UdpRelayFault.Fragmented, false, false)]
+    [InlineData(UdpRelayFault.NonzeroReserved, false, false)] [InlineData(UdpRelayFault.Truncated, false, false)]
+    [InlineData(UdpRelayFault.WrongTargetPort, false, false)] [InlineData(UdpRelayFault.WrongTargetAddress, false, false)]
+    [InlineData(UdpRelayFault.WrongOuterSource, false, false)] [InlineData(UdpRelayFault.DropResponses, false, false)]
+    [InlineData(UdpRelayFault.None, true, true)] [InlineData(UdpRelayFault.Fragmented, false, true)]
+    [InlineData(UdpRelayFault.DropResponses, false, true)] [InlineData(UdpRelayFault.WrongOuterSource, false, true)]
+    public async Task BridgeValidatesRealRelayRepliesWithoutDirectFallback(UdpRelayFault fault, bool expected, bool automatic)
     {
         await using var echo = new UdpEchoServer(); await using var relay = new Socks5UdpRelay(echo, new() { Fault = fault });
-        await using var bridge = new StrictSocksUdpBridge(new(IPAddress.Loopback, relay.Port));
+        await using var bridge = new StrictSocksUdpBridge(new(IPAddress.Loopback, relay.Port), automatic ? new(AutomaticProfile: relay.Profile with { UdpRelayMode = UdpRelayMode.Auto }) : null);
         var result = await new ProxyDiagnostics(new LocalSecrets(bridge.LocalCredentials), TimeSpan.FromSeconds(1)).TestUdpRelayAsync(
             new() { Host = "127.0.0.1", Port = bridge.EndPoint.Port, CredentialsRef = "local" },
             new(echo.EndPoint.Address.ToString(), echo.EndPoint.Port), default);

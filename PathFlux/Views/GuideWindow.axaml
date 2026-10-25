@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PathFlux.Views.GuideWindow"
+        Title="Как пользоваться PathFlux" Width="800" Height="760" MinWidth="560" MinHeight="450"
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource AppBackground}" Icon="/Assets/Branding/pathflux.ico">
+  <Grid RowDefinitions="Auto,*" Margin="26" RowSpacing="18">
+    <StackPanel Orientation="Horizontal" Spacing="14">
+      <Image Source="/Assets/Branding/pathflux-logo.png" Width="46" Height="46"/>
+      <StackPanel Spacing="3"><TextBlock Text="Как пользоваться PathFlux" FontSize="25" FontWeight="Bold"/><TextBlock Text="От первого запуска до рабочего приложения" Opacity="0.65"/></StackPanel>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1"><StackPanel x:Name="GuideContent" Spacing="12" Margin="0,0,14,0"/></ScrollViewer>
+  </Grid>
+</Window>

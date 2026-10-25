@@ -17,7 +17,7 @@ public sealed class UdpEchoServer : IAsyncDisposable
     public int ReceivedPackets => Volatile.Read(ref _received);
     public ConcurrentQueue<byte[]> Payloads { get; } = new();
 
-    public UdpEchoServer(AddressFamily family = AddressFamily.InterNetwork)
+    public UdpEchoServer(AddressFamily family = AddressFamily.InterNetwork, Func<byte[], byte[]>? transform = null)
     {
         _socket = new UdpClient(new IPEndPoint(family == AddressFamily.InterNetwork ? IPAddress.Loopback : IPAddress.IPv6Loopback, 0));
         _loop = Task.Run(async () =>
@@ -29,7 +29,7 @@ public sealed class UdpEchoServer : IAsyncDisposable
                     var packet = await _socket.ReceiveAsync(_stop.Token);
                     Interlocked.Increment(ref _received);
                     Payloads.Enqueue(packet.Buffer.ToArray());
-                    await _socket.SendAsync(packet.Buffer, packet.RemoteEndPoint, _stop.Token);
+                    await _socket.SendAsync(transform?.Invoke(packet.Buffer) ?? packet.Buffer, packet.RemoteEndPoint, _stop.Token);
                 }
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException) { }
