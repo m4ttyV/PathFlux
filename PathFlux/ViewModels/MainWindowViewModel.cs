@@ -25,7 +25,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     public ObservableCollection<ProcessInfo> SelectedProcesses { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
     public ProxyProtocol[] Protocols { get; } = Enum.GetValues<ProxyProtocol>();
-    public SelectorKind[] Selectors { get; } = [SelectorKind.ProcessName, SelectorKind.ExecutablePath];
+    public SelectorKind[] Selectors => ExperimentalProcessTrees ? [SelectorKind.ProcessName, SelectorKind.ExecutablePath, SelectorKind.ProcessInstance] : [SelectorKind.ProcessName, SelectorKind.ExecutablePath];
     public NetworkTransport[] Networks { get; } = Enum.GetValues<NetworkTransport>();
     public UdpRelayMode[] UdpRelayModes { get; } = Enum.GetValues<UdpRelayMode>();
     public string[] UdpRelayModeNames { get; } = ["Standard SOCKS5", "Docker NAT (Explicit Port Mapping)"];
@@ -65,6 +65,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private RoutingRule? _selectedRule;
     [ObservableProperty] private string _ruleName = "Новое правило";
     [ObservableProperty] private bool _ruleEnabled = true;
+    [ObservableProperty] private bool _ruleIncludeChildren;
     [ObservableProperty] private string _rulePriority = "100";
     [ObservableProperty] private SelectorKind _ruleSelector = SelectorKind.ProcessName;
     [ObservableProperty] private string _ruleValue = "Discord.exe";
@@ -86,6 +87,8 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [ObservableProperty] private bool _bypassLan;
     [ObservableProperty] private string _refreshSeconds = "5";
     [ObservableProperty] private bool _experimentalSocksUdp;
+    [ObservableProperty] private bool _experimentalProcessTrees;
+    partial void OnExperimentalProcessTreesChanged(bool value) => OnPropertyChanged(nameof(Selectors));
     [ObservableProperty] private string _liveUdpText = "UDP-посредники не запущены.";
     [ObservableProperty] private bool _isRecordingUdp;
     [ObservableProperty] private string _udpRecordingPath = "";
@@ -148,6 +151,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         RuleName = r.Name; RuleEnabled = r.Enabled; RulePriority = r.Priority.ToString();
         RuleSelector = r.Selector.Kind; RuleValue = r.Selector.Value; RuleNetwork = r.Network; RuleAction = r.Action;
         RuleProfile = Profiles.FirstOrDefault(p => p.Id == r.ProfileId);
+        RuleIncludeChildren = r.IncludeChildren;
     }
 
     public async Task InitializeAsync()
@@ -161,6 +165,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
             SelectedTheme = _configuration.Settings.Theme;
             BypassLan = _configuration.Settings.BypassLan;
             ExperimentalSocksUdp = _configuration.Settings.ExperimentalSocksUdp;
+            ExperimentalProcessTrees = _configuration.Settings.ExperimentalProcessTrees;
             RefreshSeconds = _configuration.Settings.ProcessRefreshSeconds.ToString();
             ThemeChanged?.Invoke(SelectedTheme);
             var c = await engine.GetCapabilitiesAsync(ct);
@@ -242,6 +247,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!CanEdit) return;
         SelectedRule = null; RuleName = "Новое правило"; RuleEnabled = true; RulePriority = "100";
         RuleSelector = SelectorKind.ProcessName; RuleValue = "Discord.exe"; RuleNetwork = NetworkTransport.Tcp;
+        RuleIncludeChildren = false;
         RuleAction = RouteAction.Proxy; RuleProfile = Profiles.FirstOrDefault();
     }
     [RelayCommand] private Task SaveRuleAsync() => RunAsync(async ct =>
@@ -250,12 +256,14 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!int.TryParse(RulePriority, out var priority)) throw new EditorValidationException("Приоритет должен быть целым числом.");
         if (string.IsNullOrWhiteSpace(RuleName) || string.IsNullOrWhiteSpace(RuleValue))
             throw new EditorValidationException("Укажите название и значение селектора.");
-        if (RuleSelector == SelectorKind.ProcessInstance) throw new EditorValidationException("Точная маршрутизация PID недоступна.");
+        if (RuleSelector == SelectorKind.ProcessInstance && (!ExperimentalProcessTrees || SelectedRule?.Selector.Instance is null))
+            throw new EditorValidationException("Сначала сохраните настройку backend дерева PID и создайте правило из списка процессов.");
         if (RuleAction == RouteAction.Proxy && RuleProfile is null) throw new EditorValidationException("Выберите прокси-профиль.");
         var r = new RoutingRule
         {
             Id = SelectedRule?.Id ?? Guid.NewGuid(), Name = RuleName.Trim(), Enabled = RuleEnabled, Priority = priority,
-            Selector = new(RuleSelector, RuleValue.Trim()), Network = RuleNetwork, Action = RuleAction,
+            Selector = new(RuleSelector, RuleValue.Trim(), RuleSelector == SelectorKind.ProcessInstance ? SelectedRule?.Selector.Instance : null), Network = RuleNetwork, Action = RuleAction,
+            IncludeChildren = RuleIncludeChildren,
             ProfileId = RuleAction == RouteAction.Proxy ? RuleProfile?.Id : null, OnProxyFailure = FailurePolicy.Block
         };
         var next = _configuration with { Rules = _configuration.Rules.Where(x => x.Id != r.Id).Append(r).ToList() };
@@ -273,6 +281,22 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     [RelayCommand] private Task RefreshProcessesAsync() => RunAsync(RefreshProcessesCoreAsync);
     [RelayCommand] private Task CreateNameRulesAsync() => CreateProcessRulesAsync(SelectorKind.ProcessName);
     [RelayCommand] private Task CreatePathRulesAsync() => CreateProcessRulesAsync(SelectorKind.ExecutablePath);
+    [RelayCommand] private Task CreatePidTreeRulesAsync() => RunAsync(async ct =>
+    {
+        RequireStopped();
+        if (!_configuration.Settings.ExperimentalProcessTrees) throw new EditorValidationException("Сначала включите и сохраните экспериментальный backend дерева PID.");
+        var selected = SelectedProcesses.ToArray();
+        if (selected.Length == 0 || selected.Any(p => p.Pid <= 4 || p.StartTimeUtc is null || p.SequenceNumber is not > 0))
+            throw new EditorValidationException("Выберите процессы с доступными PID, временем создания и системным номером экземпляра.");
+        var profile = Profiles.FirstOrDefault(p => p.Enabled) ?? throw new EditorValidationException("Создайте включённый профиль.");
+        var additions = selected.DistinctBy(p => new { p.Pid, p.StartTimeUtc }).Select(p => new RoutingRule {
+            Name = $"{p.Name} — дерево PID {p.Pid}", Selector = new(SelectorKind.ProcessInstance, p.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture), new(p.Pid,p.StartTimeUtc!.Value,p.SequenceNumber)),
+            IncludeChildren = true, ProfileId = profile.Id, Network = NetworkTransport.Tcp }).ToList();
+        var next = _configuration with { Rules = _configuration.Rules.Concat(additions).ToList() };
+        ValidateLocal(next); await PersistAsync(next,ct);
+        SelectedRule = Rules.First(r => r.Id == additions[0].Id); SelectedTab = 2;
+        Notice = "Созданы TCP-правила точного дерева PID. После перезапуска корневого приложения выберите его новый экземпляр. Требуется отдельная экспериментальная сборка движка.";
+    },true);
     private Task CreateProcessRulesAsync(SelectorKind kind) => RunAsync(async ct =>
     {
         RequireStopped(); var selected = SelectedProcesses.ToArray();
@@ -361,7 +385,7 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
         if (!int.TryParse(RefreshSeconds, out var interval) || interval is < 2 or > 300)
             throw new EditorValidationException("Интервал обновления должен быть от 2 до 300 секунд.");
         var settings = _configuration.Settings with
-        { EnginePath = EnginePath.Trim(), EngineSha256 = EngineSha256.Trim(), Theme = SelectedTheme, BypassLan = BypassLan, ProcessRefreshSeconds = interval, ExperimentalSocksUdp = ExperimentalSocksUdp };
+        { EnginePath = EnginePath.Trim(), EngineSha256 = EngineSha256.Trim(), Theme = SelectedTheme, BypassLan = BypassLan, ProcessRefreshSeconds = interval, ExperimentalSocksUdp = ExperimentalSocksUdp, ExperimentalProcessTrees = ExperimentalProcessTrees };
         await PersistAsync(_configuration with { Settings = settings }, ct); ThemeChanged?.Invoke(SelectedTheme);
         Notice = "Настройки сохранены. Для запуска укажите доверенный sing-box и его SHA-256.";
     }, true);
@@ -531,6 +555,31 @@ public partial class MainWindowViewModel(IConfigurationStore store, ISecretStore
     }
     private void AddLog(string message)
     { LogEntries.Insert(0, $"{DateTime.Now:HH:mm:ss} · {message}"); while (LogEntries.Count > 150) LogEntries.RemoveAt(LogEntries.Count - 1); }
+    // Exit is allowed only after the adapter confirms that its owned resources are stopped.
+    // A failed attempt leaves polling and commands alive so recovery can be retried.
+    public async Task<bool> TryStopForExitAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ownsBusyState = false;
+        try
+        {
+            if (_operationFinished is { } operation) await operation.Task.WaitAsync(timeout.Token);
+            IsBusy = true;
+            ownsBusyState = true;
+            await engine.StopAsync(timeout.Token);
+            await UpdateStatusAsync(timeout.Token);
+            if (!EngineActive) return true;
+            Notice = "Выход отложен: остановка движка или очистка сети не подтверждена. " + StatusDetail;
+        }
+        catch (Exception ex)
+        {
+            Notice = $"Выход отложен: остановка не подтверждена ({ex.GetType().Name}). Повторите остановку движка.";
+        }
+        finally { if (ownsBusyState) IsBusy = false; }
+        AddLog(Notice);
+        return false;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return; _disposed = true; await _lifetime.CancelAsync();

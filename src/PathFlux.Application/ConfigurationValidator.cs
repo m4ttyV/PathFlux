@@ -7,10 +7,18 @@ namespace PathFlux.Application;
 /// <summary>Validates persisted policy without reading files or invoking a privileged engine.</summary>
 public static class ConfigurationValidator
 {
+    public static ConfigValidationResult ValidateEngineActivation(ProxyConfiguration configuration)
+    {
+        var issues = Validate(configuration).Issues.ToList();
+        if (configuration.Settings?.ExperimentalProcessTrees == true && configuration.Rules is not null)
+            foreach (var rule in configuration.Rules.Where(r => r is not null && r.Enabled && (r.IncludeChildren || r.Selector?.Kind == SelectorKind.ProcessInstance) && r.Network != NetworkTransport.Tcp))
+                issues.Add(new("tree.udp.notVerified", "UDP для точного дерева PID ещё не прошёл сетевую приёмку. Для дерева выберите TCP; обычные UDP-правила не изменяются.", rule.Id));
+        return new(issues);
+    }
     public static ConfigValidationResult Validate(ProxyConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        var issues = ValidatePolicy(configuration.Rules, configuration.Profiles).Issues.ToList();
+        var issues = ValidatePolicy(configuration.Rules, configuration.Profiles, configuration.Settings?.ExperimentalProcessTrees == true).Issues.ToList();
         if (configuration.SchemaVersion is not (1 or 2))
             issues.Add(new("schema.unsupported", "Поддерживаются схемы конфигурации 1 и 2."));
         if (configuration.DefaultAction != RouteAction.Direct)
@@ -19,6 +27,11 @@ public static class ConfigurationValidator
             issues.Add(new("settings.required", "Отсутствуют настройки приложения."));
         else
         {
+            if (configuration.Settings.ExperimentalProcessTrees)
+            {
+                if (configuration.SchemaVersion != 2) issues.Add(new("tree.schema", "Дерево PID требует схемы 2."));
+                issues.Add(new("tree.experimental", "Дерево PID Experimental: отдельная сборка движка, неизвестная принадлежность блокируется. Для UDP приёмка не завершена.", IsWarning: true));
+            }
             if (configuration.Settings.ProcessRefreshSeconds is < 1 or > 3600)
                 issues.Add(new("settings.refresh", "Интервал обновления процессов должен быть от 1 до 3600 секунд."));
             if (configuration.Settings.DnsMode != "System")
@@ -39,7 +52,7 @@ public static class ConfigurationValidator
         return new(issues);
     }
 
-    public static ConfigValidationResult ValidatePolicy(IReadOnlyList<RoutingRule>? rules, IReadOnlyList<ProxyProfile>? profiles)
+    public static ConfigValidationResult ValidatePolicy(IReadOnlyList<RoutingRule>? rules, IReadOnlyList<ProxyProfile>? profiles, bool processTrees = false)
     {
         var issues = new List<ValidationIssue>();
         if (profiles is null) issues.Add(new("profiles.required", "Отсутствует список профилей."));
@@ -77,7 +90,7 @@ public static class ConfigurationValidator
 
             // Disabled rules remain editable drafts, but cannot affect a compiled routing table.
             if (!rule.Enabled) continue;
-            ValidateRule(rule, availableProfiles, issues);
+            ValidateRule(rule, availableProfiles, issues, processTrees);
         }
         return new(issues);
     }
@@ -120,14 +133,16 @@ public static class ConfigurationValidator
         }
     }
 
-    private static void ValidateRule(RoutingRule rule, IReadOnlyDictionary<Guid, ProxyProfile> profiles, List<ValidationIssue> issues)
+    private static void ValidateRule(RoutingRule rule, IReadOnlyDictionary<Guid, ProxyProfile> profiles, List<ValidationIssue> issues, bool processTrees)
     {
         void Error(string code, string message) => issues.Add(new(code, message, rule.Id));
         if (!Enum.IsDefined(rule.Network)) Error("rule.network", "Неподдерживаемый сетевой транспорт.");
         if (!Enum.IsDefined(rule.Action)) Error("rule.action", "Неподдерживаемое действие правила.");
         if (!Enum.IsDefined(rule.OnProxyFailure)) Error("rule.failure", "Неподдерживаемая политика сбоя прокси.");
         if (!Enum.IsDefined(rule.Lifetime)) Error("rule.lifetime", "Неподдерживаемый срок действия правила.");
-        if (rule.IncludeChildren) Error("children.unsupported", "Маршрутизация дочерних процессов в этой версии недоступна.");
+        if (rule.IncludeChildren && !processTrees) Error("children.unsupported", "Для дерева процессов нужен экспериментальный backend PathFlux Process Tree.");
+        if (rule.IncludeChildren && processTrees && rule.Selector?.Kind != SelectorKind.ProcessInstance)
+            Error("children.root", "Для точного дерева выберите корневой PID с временем создания через список процессов.");
         if (rule.Lifetime == RuleLifetime.UntilProcessExit)
             Error("lifetime.unsupported", "Одноразовые правила требуют подтверждённой атрибуции экземпляра процесса и пока недоступны.");
 
@@ -136,8 +151,15 @@ public static class ConfigurationValidator
         else
         {
             if (!Enum.IsDefined(rule.Selector.Kind)) Error("selector.kind", "Неподдерживаемый селектор процесса.");
-            else if (rule.Selector.Kind == SelectorKind.ProcessInstance)
+            else if (rule.Selector.Kind == SelectorKind.ProcessInstance && !processTrees)
                 Error("pid.unsupported", "Точный PID не поддерживается; выберите постоянное правило по имени или пути EXE.");
+            else if (rule.Selector.Kind == SelectorKind.ProcessInstance)
+            {
+                if (rule.Selector.Instance is not { Pid: > 4, SequenceNumber: > 0 } instance || instance.StartTimeUtc == default ||
+                    instance.StartTimeUtc.UtcTicks <= DateTime.FromFileTimeUtc(0).Ticks ||
+                    rule.Selector.Value != instance.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                    Error("pid.identity", "Для точного PID нужны согласованные PID и время создания из списка процессов.");
+            }
             else
             {
                 if (rule.Selector.Instance is not null)

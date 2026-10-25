@@ -22,7 +22,8 @@ public partial class App : Avalonia.Application
         {
             foreach (var validator in BindingPlugins.DataValidators.OfType<DataAnnotationsValidationPlugin>().ToArray())
                 BindingPlugins.DataValidators.Remove(validator);
-            var smokeTest = desktop.Args?.Contains("--smoke-test") == true;
+            var traySmokeTest = desktop.Args?.Contains("--tray-smoke-test") == true;
+            var smokeTest = desktop.Args?.Contains("--smoke-test") == true || traySmokeTest;
             string? acceptance = desktop.Args is { Length: 3 } arguments && arguments[0] == "--udp-acceptance" &&
                 Path.IsPathFullyQualified(arguments[1]) && arguments[2] == "--allow-system-tun" ? arguments[1] : null;
             // Smoke mode uses in-memory sample data and never saves over the user's state.
@@ -33,22 +34,42 @@ public partial class App : Avalonia.Application
             IConfigurationStore store = smokeTest ? new SmokeConfigurationStore()
                 : new JsonConfigurationStore(Path.Combine(dataDirectory, "config.json"));
             var adapter = new SingBoxEngineAdapter(secretStore);
+            IProxyEngineAdapter uiAdapter = smokeTest ? new SmokeEngineAdapter(adapter) : adapter;
             var viewModel = new MainWindowViewModel(store,
-                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), adapter);
+                secretStore, new ProcessDiscoveryService(), new ProxyDiagnostics(secretStore), uiAdapter);
             viewModel.ThemeChanged += theme => RequestedThemeVariant = theme switch
                 { "Light" => ThemeVariant.Light, "System" => ThemeVariant.Default, _ => ThemeVariant.Dark };
             var window = new MainWindow { DataContext = viewModel };
+            if ((!smokeTest && acceptance is null) || traySmokeTest) window.EnableTray();
+            desktop.ShutdownRequested += async (_, e) =>
+            {
+                if (window.ExitConfirmed) return;
+                e.Cancel = true;
+                await window.ExitAsync();
+            };
+            var opened = false;
             window.Opened += async (_, _) =>
             {
+                // Show() after Hide() raises Opened again; never reload configuration or restart polling.
+                if (opened) return;
+                opened = true;
                 try
                 {
                     await viewModel.InitializeAsync();
+                    if (traySmokeTest)
+                    {
+                        window.Close();
+                        if (window.IsVisible) throw new InvalidOperationException("Close did not hide to tray.");
+                        if (((SmokeEngineAdapter)uiAdapter).StopCalls != 0) throw new InvalidOperationException("Hide stopped the engine.");
+                        window.RestoreFromTray();
+                        if (!window.IsVisible || !viewModel.IsInitialized) throw new InvalidOperationException("Tray restore failed.");
+                    }
                     if (acceptance is not null)
                     {
                         int acceptanceExit = await UiUdpAcceptance.RunAsync(viewModel, adapter, acceptance);
                         Environment.ExitCode = acceptanceExit;
                         desktop.Exit += (_, eventArgs) => eventArgs.ApplicationExitCode = acceptanceExit;
-                        window.Close();
+                        await window.ExitAsync();
                         return;
                     }
                     if (smokeTest)
@@ -80,18 +101,29 @@ public partial class App : Avalonia.Application
                             }
                         }
                         Environment.ExitCode = viewModel.IsInitialized ? 0 : 2;
-                        window.Close();
+                        await window.ExitAsync();
                     }
                 }
                 catch
                 {
                     Environment.ExitCode = 3;
-                    if (smokeTest || acceptance is not null) window.Close();
+                    if (smokeTest || acceptance is not null) await window.ExitAsync();
                 }
             };
             desktop.MainWindow = window;
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    // Rendering/lifecycle checks must never inspect or recover a real network session.
+    private sealed class SmokeEngineAdapter(IProxyEngineAdapter capabilities) : IProxyEngineAdapter
+    {
+        public int StopCalls { get; private set; }
+        public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => capabilities.GetCapabilitiesAsync(ct);
+        public Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct) => Task.FromResult(ConfigurationValidator.Validate(config));
+        public Task StartAsync(ProxyConfiguration config, CancellationToken ct) => throw new InvalidOperationException("Smoke mode cannot start a network engine.");
+        public Task StopAsync(CancellationToken ct) { StopCalls++; return Task.CompletedTask; }
+        public Task<EngineStatus> GetStatusAsync(CancellationToken ct) => Task.FromResult(new EngineStatus(EngineState.Stopped, "Движок остановлен."));
     }
 
     private sealed class SmokeConfigurationStore : IConfigurationStore

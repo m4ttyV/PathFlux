@@ -179,13 +179,28 @@ public sealed partial class WorkflowTests
     private sealed class FakeEngine : IProxyEngineAdapter
     {
         public Exception? StartFailure { get; init; }
+        public Exception? StopFailure { get; set; }
+        public TaskCompletionSource? StartGate { get; init; }
+        public bool KeepRunningAfterStop { get; set; }
+        public int StopCalls { get; private set; }
         public EngineState State { get; set; } = EngineState.Stopped;
         public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => Task.FromResult(new EngineCapabilities(
             SupportStatus.NotVerified, SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported,
             SupportStatus.NotVerified, SupportStatus.Unsupported, SupportStatus.Unsupported));
         public Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct) => Task.FromResult(ConfigurationValidator.Validate(config));
-        public Task StartAsync(ProxyConfiguration config, CancellationToken ct) { if (StartFailure is not null) throw StartFailure; State = EngineState.Running; return Task.CompletedTask; }
-        public Task StopAsync(CancellationToken ct) { State = EngineState.Stopped; return Task.CompletedTask; }
+        public async Task StartAsync(ProxyConfiguration config, CancellationToken ct)
+        {
+            if (StartFailure is not null) throw StartFailure;
+            if (StartGate is not null) await StartGate.Task.WaitAsync(ct);
+            State = EngineState.Running;
+        }
+        public Task StopAsync(CancellationToken ct)
+        {
+            StopCalls++;
+            if (StopFailure is not null) throw StopFailure;
+            if (!KeepRunningAfterStop) State = EngineState.Stopped;
+            return Task.CompletedTask;
+        }
         public Task<EngineStatus> GetStatusAsync(CancellationToken ct) => Task.FromResult(new EngineStatus(State, "Test engine; no network changes."));
     }
 }

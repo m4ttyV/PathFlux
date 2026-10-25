@@ -135,7 +135,7 @@ public sealed class JsonConfigurationStore(string path) : IConfigurationStore, I
                 ?? throw new InvalidDataException("Configuration is empty. Original data is preserved.");
             ValidateStructure(configuration);
             if (version == 1) configuration = configuration with { SchemaVersion = CurrentSchema,
-                Settings = configuration.Settings with { ExperimentalSocksUdp = false },
+                Settings = configuration.Settings with { ExperimentalSocksUdp = false, ExperimentalProcessTrees = false },
                 Profiles = configuration.Profiles.Select(p => p with { UdpRelayMode = UdpRelayMode.Standard, UdpPublishedPortFirst = null, UdpPublishedPortLast = null, UseTlsServerNameForTcp = false }).ToList() };
             return configuration;
         }

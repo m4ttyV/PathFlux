@@ -25,6 +25,7 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
     private string failureMessage = "Ошибка сетевого агента.";
     private string stoppedMessage = "Движок остановлен.";
     private EngineState state = EngineState.Stopped;
+    private bool processTreesActive;
     // Only the explicit elevated NetworkLab mode can inject this fault; no production IPC operation exposes it.
     internal void FailUdpForLaboratory(Guid profileId) => udpBridges?.Bridges[profileId].FailClosed();
     public async Task<EngineStatus> GetStatusAsync(CancellationToken ct)
@@ -35,7 +36,8 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
     public EngineStatus Status => engineStarted && engine is not null && engine.HasExited
         ? new(EngineState.Failed, "Движок аварийно завершился. Проверьте сеть; системный kill switch отсутствует.", Udp: udpBridges?.Snapshot() ?? lastUdp)
         : new(state, (state == EngineState.Failed ? failureMessage : state == EngineState.Degraded
-            ? udpBridges?.Bridges.Count > 0 ? "TUN запущен. UDP Experimental: проверяйте статистику; Discord не принят, DNS системный, kill switch отсутствует."
+            ? processTreesActive ? "TUN запущен. Дерево PID: TCP Experimental; TCP-правило не охватывает UDP, DNS системный."
+                : udpBridges?.Bridges.Count > 0 ? "TUN запущен. UDP Experimental: проверяйте статистику; Discord не принят, DNS системный, kill switch отсутствует."
                 : "TUN запущен. Выборочный TCP доступен с ограничениями; UDP заблокирован, DNS системный."
             : stoppedMessage) + (udpBridges?.TcpBridges.Count > 0 ? " " + string.Join(" ", udpBridges.TcpBridges.Values.Select(b => b.Diagnostic)) : ""), engine?.Id, udpBridges?.Snapshot() ?? lastUdp);
 
@@ -50,18 +52,20 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
         if (engine is not null) return new(false, new(EngineState.Failed, "Повторный запуск отклонён."));
         try
         {
-            var validation = ConfigurationValidator.Validate(config);
+            var validation = ConfigurationValidator.ValidateEngineActivation(config);
             if (!validation.IsValid) return new(false, new(EngineState.Failed, "Агент отклонил конфигурацию."));
+            processTreesActive = config.Settings.ExperimentalProcessTrees && config.Rules.Any(r => r.Enabled && (r.IncludeChildren || r.Selector.Kind == SelectorKind.ProcessInstance));
             // Elevated process verifies independently and holds executable open (denies writes and deletion).
             EngineBinary.EnsurePath(config.Settings.EnginePath);
             binaryLock = new FileStream(config.Settings.EnginePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var version = await EngineBinary.VerifyAsync(config.Settings.EnginePath, config.Settings.EngineSha256, ct);
+            if (config.Settings.ExperimentalProcessTrees) await EngineBinary.VerifyProcessTreeBackendAsync(config.Settings.EnginePath, ct);
             if (TunInterfaceProbe.RequiresCleanup(SingBoxConfigGenerator.InterfaceName))
                 throw new InvalidOperationException("Интерфейс PathFlux-TUN уже существует. Выполните recovery перед запуском.");
             var memorySecrets = new MemorySecrets(credentials);
             udpBridges = await AgentUdpBridges.CreateAsync(config, memorySecrets, ct);
             lastUdp = [];
-            string json = await new SingBoxConfigGenerator(memorySecrets).GenerateAgentAsync(config, udpBridges.Bridges, ct, version, udpBridges.TcpBridges);
+            string json = await new SingBoxConfigGenerator(memorySecrets).GenerateAgentAsync(config, udpBridges.Bridges, ct, version, udpBridges.TcpBridges, config.Settings.ExperimentalProcessTrees);
             if (!await EngineBinary.CheckAsync(config.Settings.EnginePath, json, ct))
                 throw new InvalidOperationException("sing-box check отклонил конфигурацию.");
             string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PathFlux");
@@ -164,6 +168,7 @@ internal sealed class EngineSession : IDisposable, IAsyncDisposable
             job?.Dispose(); job = null;
             engine?.Dispose(); engine = null;
             engineStarted = false;
+            processTreesActive = false;
             // Stop routing first. Sockets are owned by this agent, never by a detached helper.
             if (udpBridges is not null)
             {

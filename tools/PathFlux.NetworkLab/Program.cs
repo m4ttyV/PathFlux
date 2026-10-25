@@ -4,6 +4,30 @@ using PathFlux.Engine;
 using PathFlux.Application;
 using PathFlux.Domain;
 
+if (args.Length == 2 && args[0] == "tree-parent") return await ProcessTreeAudit.ParentAsync(args[1]);
+if (args.Length == 6 && args[0] == "process-tree-agent" && args[^1] == "--allow-system-tun" && Path.IsPathFullyQualified(args[4]))
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+    return await ProcessTreeAudit.RunAsync(args[1],args[2],args[3],deadline.Token,productionAgent:args[4]);
+}
+if (args.Length >= 3 && args[0] == "tree-spawn")
+{
+    var result = await LabChild.RunAsync(args[1],args.Skip(2).ToArray(),CancellationToken.None);
+    Console.WriteLine(JsonSerializer.Serialize(result)); return result.Success?0:10;
+}
+if(args.Length == 6 && args[0] == "elevate" && args[1] is "process-tree" or "process-tree-udp" && args[^1] == "--allow-tun")
+{
+    var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) {UseShellExecute=true,Verb="runas",WindowStyle=System.Diagnostics.ProcessWindowStyle.Hidden};
+    foreach(var arg in args.Skip(1)) info.ArgumentList.Add(arg);
+    using var child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("LabLaunchFailed");
+    await child.WaitForExitAsync(); return child.ExitCode;
+}
+if(args.Length == 5 && args[0] is "process-tree" or "process-tree-udp" && args[^1] == "--allow-tun")
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+    return await ProcessTreeAudit.RunAsync(args[1],args[2],args[3],deadline.Token,args[0] == "process-tree-udp");
+}
+
 if (args.Length == 7 && args[0] == "elevate" && args[1] == "browser-tcp" && args[^1] == "--allow-tun")
 {
     var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)

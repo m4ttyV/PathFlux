@@ -36,7 +36,7 @@ public static class LabPolicy
     {
         // Use actual domain rule compiler. Only TUN scope is narrowed for this isolated lab.
         var generator = new SingBoxConfigGenerator(new NoSecrets());
-        var root = JsonNode.Parse(guards is not null ? await generator.GenerateExperimentalUdpAsync(config, ct, engineVersion, guards)
+        var root = JsonNode.Parse(guards is not null || config.Settings.ExperimentalProcessTrees ? await generator.GenerateExperimentalUdpAsync(config, ct, engineVersion, guards, config.Settings.ExperimentalProcessTrees)
             : await generator.GenerateAsync(config, ct, engineVersion: engineVersion))!;
         if (guards is not null) root["log"]!["level"] = "debug";
         root["inbounds"] = new JsonArray(new JsonObject

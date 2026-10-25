@@ -13,29 +13,31 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
         => GenerateCoreAsync(configuration, ct, redactSecrets, engineVersion, guards: null);
     // Agent owns the live guards; a feature flag alone cannot create a working UDP outbound.
     internal Task<string> GenerateAgentAsync(ProxyConfiguration configuration, IReadOnlyDictionary<Guid, StrictSocksUdpBridge> guards,
-        CancellationToken ct, Version? engineVersion = null, IReadOnlyDictionary<Guid, TlsNameSocksBridge>? tcpGuards = null)
+        CancellationToken ct, Version? engineVersion = null, IReadOnlyDictionary<Guid, TlsNameSocksBridge>? tcpGuards = null, bool processTreeBackend = false)
         => GenerateCoreAsync(configuration, ct, false, engineVersion, configuration.Settings.ExperimentalSocksUdp ?
             guards.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)) : null,
-            tcpGuards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)));
+            tcpGuards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)), processTreeBackend);
     // sing-box check does not connect. Validation must not create transport listeners in the unelevated UI.
-    internal Task<string> GenerateValidationAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null)
+    internal Task<string> GenerateValidationAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null, bool processTreeBackend = false)
     {
         var used = configuration.Rules.Where(ExperimentalUdpPolicy.UsesUdp).Select(r => r.ProfileId).ToHashSet();
         var descriptors = configuration.Settings.ExperimentalSocksUdp ? configuration.Profiles.Where(p => used.Contains(p.Id) && p.Protocol == ProxyProtocol.Socks5)
             .ToDictionary(p => p.Id, p => new UdpOutbound(new(IPAddress.Loopback, 9), new("validation-only", "validation-only"))) : null;
         var tcp = configuration.Profiles.Where(p => p.UseTlsServerNameForTcp && configuration.Rules.Any(r => r.Enabled && r.Action == RouteAction.Proxy && r.ProfileId == p.Id && r.Network is NetworkTransport.Tcp or NetworkTransport.Both))
             .ToDictionary(p => p.Id, p => new UdpOutbound(new(IPAddress.Loopback, 9), new("validation-only", "validation-only")));
-        return GenerateCoreAsync(configuration, ct, false, engineVersion, descriptors, tcp);
+        return GenerateCoreAsync(configuration, ct, false, engineVersion, descriptors, tcp, processTreeBackend);
     }
     internal Task<string> GenerateExperimentalUdpAsync(ProxyConfiguration configuration, CancellationToken ct, Version? engineVersion = null,
-        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards = null)
-        => GenerateCoreAsync(configuration, ct, false, engineVersion, guards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)));
+        IReadOnlyDictionary<Guid, StrictSocksUdpBridge>? guards = null, bool processTreeBackend = false)
+        => GenerateCoreAsync(configuration, ct, false, engineVersion, guards?.ToDictionary(p => p.Key, p => new UdpOutbound(p.Value.EndPoint, p.Value.LocalCredentials)), processTreeBackend: processTreeBackend);
     private async Task<string> GenerateCoreAsync(ProxyConfiguration configuration, CancellationToken ct, bool redactSecrets, Version? engineVersion,
-        IReadOnlyDictionary<Guid, UdpOutbound>? guards, IReadOnlyDictionary<Guid, UdpOutbound>? tcpGuards = null)
+        IReadOnlyDictionary<Guid, UdpOutbound>? guards, IReadOnlyDictionary<Guid, UdpOutbound>? tcpGuards = null, bool processTreeBackend = false)
     {
         var validation = ConfigurationValidator.Validate(configuration);
         if (!validation.IsValid) throw new InvalidOperationException(string.Join("; ", validation.Issues.Where(i => !i.IsWarning).Select(i => i.Message)));
-        var policy = await new RuleCompiler().CompileAsync(configuration.Rules, configuration.Profiles, ct);
+        if (configuration.Rules.Any(r => r.Enabled && (r.IncludeChildren || r.Selector.Kind == SelectorKind.ProcessInstance)) && !processTreeBackend)
+            throw new InvalidOperationException("Дерево PID требует проверенного backend PathFlux Process Tree; подмена правилами EXE запрещена.");
+        var policy = await new RuleCompiler(configuration.Settings.ExperimentalProcessTrees).CompileAsync(configuration.Rules, configuration.Profiles, ct);
         if (!policy.IsValid) throw new InvalidOperationException("Правила не прошли проверку.");
         JsonArray outbounds = [new JsonObject { ["type"] = "direct", ["tag"] = "direct" }];
         foreach (var p in policy.Profiles)
@@ -91,7 +93,17 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             var transports = r.Network == NetworkTransport.Both ? new[] { "udp", "tcp" } : [r.Network == NetworkTransport.Tcp ? "tcp" : "udp"];
             foreach (var network in transports)
             {
-                var rule = new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value), ["network"] = network };
+                bool treeRule = r.IncludeChildren || r.Selector.Kind == SelectorKind.ProcessInstance;
+                var rule = new JsonObject { ["network"] = network };
+                JsonObject? tree = null;
+                if (treeRule)
+                {
+                    tree = r.Selector.Kind == SelectorKind.ProcessInstance
+                        ? new JsonObject { ["pid"] = r.Selector.Instance!.Pid, ["started"] = r.Selector.Instance.StartTimeUtc.UtcDateTime.ToFileTimeUtc().ToString(System.Globalization.CultureInfo.InvariantCulture), ["sequence"] = r.Selector.Instance.SequenceNumber!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), ["self_only"] = !r.IncludeChildren }
+                        : new JsonObject { [r.Selector.Kind == SelectorKind.ProcessName ? "name" : "path"] = r.Selector.Value };
+                    rule["pathflux_process_tree"] = tree;
+                }
+                else rule[r.Selector.Kind == SelectorKind.ProcessName ? "process_name" : "process_path"] = new JsonArray(r.Selector.Value);
                 bool missingTcpBridge = network == "tcp" && r.Action == RouteAction.Proxy &&
                     policy.Profiles.Any(p => p.Id == r.ProfileId && p.UseTlsServerNameForTcp) && (r.ProfileId is not { } tcpId || tcpGuards?.ContainsKey(tcpId) != true);
                 // A verified relay probe does not prove transparent TUN routing. Proxy UDP remains blocked.
@@ -100,6 +112,11 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
                     rule["action"] = "reject";
                 else { rule["action"] = "route"; rule["outbound"] = r.Action == RouteAction.Direct ? "direct" : network == "udp" ? UdpTag(r.ProfileId!.Value) : Tag(r.ProfileId!.Value); }
                 rules.Add(rule);
+                if (tree is not null)
+                {
+                    var unknown = tree.DeepClone().AsObject(); unknown["unresolved"] = true;
+                    rules.Add(new JsonObject { ["network"] = network, ["pathflux_process_tree"] = unknown, ["action"] = "reject" });
+                }
             }
         }
         var root = new JsonObject
@@ -119,6 +136,7 @@ public sealed class SingBoxConfigGenerator(ISecretStore secrets)
             ["route"] = new JsonObject { ["rules"] = rules, ["final"] = "direct", ["auto_detect_interface"] = true, ["default_domain_resolver"] = "local-dns" }
         };
         if (engineVersion >= new Version(1, 15, 0)) root["inbounds"]![0]!.AsObject().Remove("stack");
+        if (configuration.Settings.ExperimentalProcessTrees) root["route"]!["find_process"] = true;
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
     public static string Tag(Guid id) => $"proxy-{id:D}";

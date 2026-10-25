@@ -3,7 +3,7 @@ using PathFlux.Domain;
 namespace PathFlux.Application;
 
 /// <summary>First match wins: ascending priority, then ordinal UUID, independent of input order.</summary>
-public sealed class RuleCompiler : IRuleCompiler
+public sealed class RuleCompiler(bool processTrees = false) : IRuleCompiler
 {
     public Task<CompiledPolicy> CompileAsync(IReadOnlyList<RoutingRule> rules, IReadOnlyList<ProxyProfile> profiles, CancellationToken ct)
     {
@@ -13,7 +13,7 @@ public sealed class RuleCompiler : IRuleCompiler
 
     public CompiledPolicy Compile(IReadOnlyList<RoutingRule> rules, IReadOnlyList<ProxyProfile> profiles)
     {
-        var validation = ConfigurationValidator.ValidatePolicy(rules, profiles);
+        var validation = ConfigurationValidator.ValidatePolicy(rules, profiles, processTrees);
         // Invalid tables are never partially usable: the engine must keep its previous working table.
         if (!validation.IsValid) return new([], [], validation.Issues);
         var compiledRules = rules.Where(rule => rule.Enabled)

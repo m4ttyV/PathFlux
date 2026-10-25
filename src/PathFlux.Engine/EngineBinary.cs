@@ -13,6 +13,26 @@ public static class EngineBinary
             throw new InvalidOperationException("Укажите полный путь к официальному sing-box.exe.");
     }
     public static readonly Version MinimumVersion = new(1, 12, 2);
+    internal static async Task VerifyProcessTreeBackendAsync(string path, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        var info = new ProcessStartInfo(path) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        info.ArgumentList.Add("pathflux-capabilities");
+        using var child = Process.Start(info) ?? throw new InvalidOperationException("Не удалось проверить backend дерева PID.");
+        try
+        {
+            var stdout = ReadBoundedAsync(child.StandardOutput, deadline.Token);
+            var stderr = child.StandardError.BaseStream.CopyToAsync(Stream.Null, deadline.Token);
+            await child.WaitForExitAsync(deadline.Token); await stderr;
+            if (child.ExitCode != 0) throw new InvalidOperationException("Для дерева PID требуется отдельная сборка PathFlux Process Tree; официальный sing-box её не поддерживает.");
+            using var document = System.Text.Json.JsonDocument.Parse(await stdout);
+            var r = document.RootElement;
+            if (r.GetProperty("protocol").GetInt32() != 3 || !r.GetProperty("decisionSnapshot").GetBoolean() || !r.GetProperty("processSequenceNumber").GetBoolean() || !r.GetProperty("processTree").GetBoolean() ||
+                !r.GetProperty("pidCreationTime").GetBoolean() || !r.GetProperty("udpOwnerGuard").GetBoolean())
+                throw new InvalidOperationException("Backend не подтвердил обязательные возможности дерева PID.");
+        }
+        finally { if (!child.HasExited) { child.Kill(true); await child.WaitForExitAsync(CancellationToken.None); } }
+    }
     public static Version ParseVersion(string output)
     {
         var match = Regex.Match(output, @"\Asing-box version (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z.-]+)?\r?(?:\n|\z)", RegexOptions.CultureInvariant);

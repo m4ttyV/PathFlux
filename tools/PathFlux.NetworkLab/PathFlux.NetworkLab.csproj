@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/PathFlux.Engine/PathFlux.Engine.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/PathFlux.Infrastructure/PathFlux.Infrastructure.csproj" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../../src/PathFlux.Agent/PathFlux.Agent.csproj" /></ItemGroup>
   <ItemGroup><Compile Include="../../tests/PathFlux.Infrastructure.Tests/UdpRelayLab.cs" Link="Lab/UdpRelayLab.cs" /></ItemGroup>
 </Project>

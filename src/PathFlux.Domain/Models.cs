@@ -28,7 +28,7 @@ public sealed record ProxyProfile
     public int? UdpPublishedPortLast { get; init; }
     public override string ToString() => Name;
 }
-public sealed record ProcessInstanceId(int Pid, DateTimeOffset StartTimeUtc);
+public sealed record ProcessInstanceId(int Pid, DateTimeOffset StartTimeUtc, ulong? SequenceNumber = null);
 public sealed record ProcessSelector(SelectorKind Kind, string Value, ProcessInstanceId? Instance = null);
 public sealed record RoutingRule
 {
@@ -54,6 +54,7 @@ public sealed record AppSettings
     public bool BypassLan { get; init; }
     public string DnsMode { get; init; } = "System";
     public bool ExperimentalSocksUdp { get; init; }
+    public bool ExperimentalProcessTrees { get; init; }
 }
 public sealed record ProxyConfiguration
 {
@@ -64,7 +65,7 @@ public sealed record ProxyConfiguration
     public AppSettings Settings { get; init; } = new();
 }
 public sealed record ProxyCredentials(string Username, string Password);
-public sealed record ProcessInfo(int Pid, string Name, string? ExecutablePath, DateTimeOffset? StartTimeUtc, int? ParentPid = null)
+public sealed record ProcessInfo(int Pid, string Name, string? ExecutablePath, DateTimeOffset? StartTimeUtc, int? ParentPid = null, ulong? SequenceNumber = null)
 {
     public string PathDisplay => ExecutablePath ?? "Нет доступа";
 }

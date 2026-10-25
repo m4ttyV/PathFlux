@@ -22,12 +22,12 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
     private string? recoveryNotice;
     private EngineStatus status = new(EngineState.Stopped, "Движок остановлен.");
     public Task<EngineCapabilities> GetCapabilitiesAsync(CancellationToken ct) => Task.FromResult(new EngineCapabilities(
-        SupportStatus.Partial, SupportStatus.Partial, SupportStatus.Unsupported, SupportStatus.Unsupported,
+        SupportStatus.Partial, SupportStatus.Partial, SupportStatus.Experimental, SupportStatus.Experimental,
         SupportStatus.Partial, SupportStatus.Experimental, SupportStatus.Unsupported));
 
     public async Task<ConfigValidationResult> ValidateAsync(ProxyConfiguration config, CancellationToken ct)
     {
-        var result = ConfigurationValidator.Validate(config);
+        var result = ConfigurationValidator.ValidateEngineActivation(config);
         if (!result.IsValid) return result;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(20));
         try
@@ -36,7 +36,8 @@ public sealed class SingBoxEngineAdapter(ISecretStore secrets) : IProxyEngineAda
             // Keep the executable locked against replacement until validation completes.
             await using var binaryLock = new FileStream(config.Settings.EnginePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var version = await EngineBinary.VerifyAsync(config.Settings.EnginePath, config.Settings.EngineSha256, timeout.Token);
-            string json = await new SingBoxConfigGenerator(secrets).GenerateValidationAsync(config, timeout.Token, version);
+            if (config.Settings.ExperimentalProcessTrees) await EngineBinary.VerifyProcessTreeBackendAsync(config.Settings.EnginePath, timeout.Token);
+            string json = await new SingBoxConfigGenerator(secrets).GenerateValidationAsync(config, timeout.Token, version, config.Settings.ExperimentalProcessTrees);
             bool valid = await EngineBinary.CheckAsync(config.Settings.EnginePath, json, timeout.Token);
             return new(result.Issues.Concat(valid ? [] : new[] { new ValidationIssue("EngineCheck", "sing-box check отклонил конфигурацию. Секретные сообщения движка скрыты.") }).ToList());
         }

@@ -23,8 +23,9 @@ public sealed class ProcessDiscoveryService : IProcessDiscoveryService
                     var name = Read(() => process.ProcessName) ?? "Недоступен";
                     var executable = Read(() => process.MainModule?.FileName);
                     var started = Read<DateTimeOffset?>(() => new DateTimeOffset(process.StartTime.ToUniversalTime()));
+                    var identity = WindowsProcessIdentity.Read(pid);
                     if (OperatingSystem.IsWindows() && !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name += ".exe";
-                    result.Add(new ProcessInfo(pid, name, executable, started));
+                    result.Add(new ProcessInfo(pid, name, executable, identity?.StartedUtc ?? started, identity?.ParentPid, identity?.SequenceNumber));
                 }
                 catch (InvalidOperationException) { /* Process exited during enumeration. */ }
                 catch (Win32Exception) { /* Protected or already exited process. */ }
